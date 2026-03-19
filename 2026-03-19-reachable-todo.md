@@ -78,36 +78,36 @@
 ## Phase 2: AST Parser
 
 ### 2.1 tree-sitter Setup
-- [ ] Run `npm install tree-sitter tree-sitter-javascript tree-sitter-typescript`
-- [ ] Create `src/parser/index.ts` with `parseFile(filePath: string): ParsedModule` dispatch function
-- [ ] Add extension detection: `.js`, `.mjs`, `.cjs` → JavaScript parser; `.ts`, `.mts` → TypeScript; `.tsx`, `.jsx` → respective X grammar
-- [ ] Export `ParsedModule` interface: `{ file: string; imports: ImportRef[]; exports: ExportRef[]; calls: CallRef[] }`
+- [x] Run `npm install tree-sitter tree-sitter-javascript tree-sitter-typescript`
+- [x] Create `src/parser/index.ts` with `parseFile(filePath: string): ParsedModule` dispatch function
+- [x] Add extension detection: `.js`, `.mjs`, `.cjs` → JavaScript parser; `.ts`, `.mts` → TypeScript; `.tsx`, `.jsx` → respective X grammar
+- [x] Export `ParsedModule` interface: `{ file: string; imports: ImportRef[]; exports: ExportRef[]; calls: CallRef[] }`
 
 ### 2.2 JavaScript Parser
-- [ ] Create `src/parser/javascript.ts`
-- [ ] Initialize `new Parser()` and call `parser.setLanguage(JavaScript)` using `tree-sitter-javascript` grammar
-- [ ] Implement `extractRequireCalls(tree: Tree): ImportRef[]` — query for `(call_expression function: (identifier) @fn arguments: (arguments (string) @path) (#eq? @fn "require"))`
-- [ ] Implement `extractESMImports(tree: Tree): ImportRef[]` — query for `(import_declaration source: (string) @source)`
-- [ ] Implement `extractDynamicImports(tree: Tree): ImportRef[]` — query for `(await_expression (call_expression function: (import) arguments: (arguments (string) @path)))`
-- [ ] Implement `extractCallSites(tree: Tree): CallRef[]` — query for `(call_expression function: [(member_expression) (identifier)] @callee)`
-- [ ] Implement `extractExports(tree: Tree): ExportRef[]` — query for `(export_statement)`
+- [x] Create `src/parser/javascript.ts`
+- [x] Initialize `new Parser()` and call `parser.setLanguage(JavaScript)` using `tree-sitter-javascript` grammar
+- [x] Implement `extractRequireCalls(tree: Tree): ImportRef[]` — query for `(call_expression function: (identifier) @fn arguments: (arguments (string) @path) (#eq? @fn "require"))`
+- [x] Implement `extractESMImports(tree: Tree): ImportRef[]` — query for `(import_declaration source: (string) @source)`
+- [x] Implement `extractDynamicImports(tree: Tree): ImportRef[]` — query for `(await_expression (call_expression function: (import) arguments: (arguments (string) @path)))`
+- [x] Implement `extractCallSites(tree: Tree): CallRef[]` — query for `(call_expression function: [(member_expression) (identifier)] @callee)`
+- [x] Implement `extractExports(tree: Tree): ExportRef[]` — query for `(export_statement)`
 
 ### 2.3 TypeScript Parser
-- [ ] Create `src/parser/typescript.ts`
-- [ ] Initialize parser with `require("tree-sitter-typescript").typescript` grammar
-- [ ] Reuse `extractESMImports` logic from JS parser (TS uses same import syntax)
-- [ ] Add `extractTypeImports()` — detect `import type { ... }` and mark `isTypeOnly: true` on `ImportRef`
-- [ ] Skip type-only imports in call graph (they don't generate runtime calls)
-- [ ] Handle `.tsx` files by switching to `require("tree-sitter-typescript").tsx` grammar
+- [x] Create `src/parser/typescript.ts`
+- [x] Initialize parser with `require("tree-sitter-typescript").typescript` grammar
+- [x] Reuse `extractESMImports` logic from JS parser (TS uses same import syntax)
+- [x] Add `extractTypeImports()` — detect `import type { ... }` and mark `isTypeOnly: true` on `ImportRef`
+- [x] Skip type-only imports in call graph (they don't generate runtime calls)
+- [x] Handle `.tsx` files by switching to `require("tree-sitter-typescript").tsx` grammar
 
 ### 2.4 Path Resolver
-- [ ] Create `src/parser/resolver.ts`
-- [ ] Implement `resolveImport(importPath: string, fromFile: string, cwd: string): string | null`
-- [ ] Handle relative paths (`./`, `../`) using `path.resolve`
-- [ ] Handle `node_modules` imports — return the package name without resolving to file
-- [ ] Load `tsconfig.json` paths aliases using `typescript` package's `readConfigFile`
-- [ ] Apply path alias substitution before resolution
-- [ ] Handle index file resolution (`import "./utils"` → `./utils/index.ts`)
+- [x] Create `src/parser/resolver.ts`
+- [x] Implement `resolveImport(importPath: string, fromFile: string, cwd: string): string | null`
+- [x] Handle relative paths (`./`, `../`) using `path.resolve`
+- [x] Handle `node_modules` imports — return the package name without resolving to file
+- [x] Load `tsconfig.json` paths aliases using `typescript` package's `readConfigFile`
+- [x] Apply path alias substitution before resolution
+- [x] Handle index file resolution (`import "./utils"` → `./utils/index.ts`)
 
 ---
 
