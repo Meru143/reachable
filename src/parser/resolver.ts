@@ -1,5 +1,5 @@
 // Module path resolver (aliases, node_modules).
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 import ts from "typescript";
@@ -23,7 +23,9 @@ function packageNameFromImport(importPath: string): string {
 
 function resolveFileCandidate(candidate: string): string | null {
   if (existsSync(candidate)) {
-    return candidate;
+    if (statSync(candidate).isFile()) {
+      return candidate;
+    }
   }
 
   for (const extension of RESOLVABLE_EXTENSIONS) {

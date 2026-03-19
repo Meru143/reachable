@@ -290,17 +290,17 @@
 ## Phase 9: Unit Tests
 
 ### 9.1 Parser Tests
-- [ ] Create `test/parser/javascript.test.ts`
-- [ ] Test `extractRequireCalls` on CJS fixture file — asserts correct import paths
-- [ ] Test `extractESMImports` on ESM fixture file — asserts source strings
-- [ ] Test `extractDynamicImports` on fixture with `import()` — asserts path extraction
-- [ ] Test `extractCallSites` — asserts member expression calls detected
-- [ ] Create `test/parser/typescript.test.ts`
-- [ ] Test `import type` statements marked as `isTypeOnly: true`
-- [ ] Test `.tsx` file parses JSX without error
-- [ ] Create `test/parser/resolver.test.ts`
-- [ ] Test relative path resolution for `../utils` from `src/auth/middleware.ts`
-- [ ] Test tsconfig path alias `@/components/Button` resolves to `src/components/Button.tsx`
+- [x] Create `test/parser/javascript.test.ts`
+- [x] Test `extractRequireCalls` on CJS fixture file — asserts correct import paths
+- [x] Test `extractESMImports` on ESM fixture file — asserts source strings
+- [x] Test `extractDynamicImports` on fixture with `import()` — asserts path extraction
+- [x] Test `extractCallSites` — asserts member expression calls detected
+- [x] Create `test/parser/typescript.test.ts`
+- [x] Test `import type` statements marked as `isTypeOnly: true`
+- [x] Test `.tsx` file parses JSX without error
+- [x] Create `test/parser/resolver.test.ts`
+- [x] Test relative path resolution for `../utils` from `src/auth/middleware.ts`
+- [x] Test tsconfig path alias `@/components/Button` resolves to `src/components/Button.tsx`
 
 ### 9.2 Graph Tests
 - [ ] Create `test/graph/builder.test.ts`
