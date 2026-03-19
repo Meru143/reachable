@@ -1,6 +1,6 @@
 {
   "name": "@merupatel/reachable",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Dependency vulnerability reachability analyzer",
   "bin": {
     "reachable": "dist/cli/index.js"

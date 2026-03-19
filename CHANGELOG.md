@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/Meru143/reachable/compare/v1.0.2...v1.0.3) (2026-03-19)
+
+
+### Bug Fixes
+
+* align PRD error handling and CI summary behavior ([12d2bd4](https://github.com/Meru143/reachable/commit/12d2bd4de80216112543a86495902e794b44b241))
+
 ## [1.0.2](https://github.com/Meru143/reachable/compare/v1.0.1...v1.0.2) (2026-03-19)
 
 
