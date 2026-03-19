@@ -6,6 +6,7 @@ import {
   extractCallSites,
   extractDynamicImports,
   extractESMImports,
+  extractExports,
   extractRequireCalls,
 } from "../../src/parser/javascript.js";
 
@@ -68,5 +69,15 @@ describe("parser/javascript", () => {
     expect(callees).toContain("app.use");
     expect(callees).toContain("express.json");
     expect(callees).toContain("object.method");
+  });
+
+  it("captures wildcard re-export metadata", () => {
+    const tree = parse(`
+      export * from "./leaf";
+    `);
+
+    expect(extractExports(tree)).toEqual([
+      { name: "*", line: 2, source: "./leaf", isWildcard: true },
+    ]);
   });
 });

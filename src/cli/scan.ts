@@ -1,4 +1,6 @@
 // `reachable scan` subcommand.
+import { appendFileSync } from "node:fs";
+
 import { Command, Option } from "commander";
 
 import { analyze } from "../analyzer.js";
@@ -7,7 +9,7 @@ import { formatJson } from "../output/json.js";
 import { formatMarkdown } from "../output/markdown.js";
 import { formatSarif } from "../output/sarif.js";
 import { formatTable } from "../output/table.js";
-import { setVerbose } from "../utils/logger.js";
+import { logger, setVerbose } from "../utils/logger.js";
 import type { AnalyzeOptions } from "../analyzer.js";
 
 type ScanCommandOptions = {
@@ -61,6 +63,20 @@ function failsThreshold(
   });
 }
 
+function writeGitHubSummary(results: Awaited<ReturnType<typeof analyze>>): void {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) {
+    return;
+  }
+
+  try {
+    appendFileSync(summaryPath, `${formatMarkdown(results)}\n`, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn({ error: message, summaryPath }, "Failed to write GitHub Actions summary");
+  }
+}
+
 export const scanCommand = new Command("scan")
   .description("Scan a project for reachable vulnerabilities")
   .option("--entry <files...>", "Entry point files")
@@ -93,6 +109,8 @@ export const scanCommand = new Command("scan")
     const filteredResults = options.reachableOnly ? results.filter((result) => result.status === "REACHABLE") : results;
     const failOn = options.failOn ?? config.failOn;
     const format = options.format ?? "table";
+
+    writeGitHubSummary(filteredResults);
 
     if (!options.quiet) {
       process.stdout.write(`${formatResults(format, filteredResults)}\n`);

@@ -14,6 +14,8 @@ export interface ImportRef {
 export interface ExportRef {
   name: string;
   line: number;
+  source?: string;
+  isWildcard?: boolean;
 }
 
 export interface CallRef {

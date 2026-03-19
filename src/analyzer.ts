@@ -5,10 +5,10 @@ import path from "node:path";
 import { buildGraph } from "./graph/builder.js";
 import { findPathTo } from "./graph/traversal.js";
 import { logger } from "./utils/logger.js";
-import { clearCache, createCacheKey, getCached, setCache } from "./vuln/cache.js";
+import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCache } from "./vuln/cache.js";
 import { queryBatch } from "./vuln/osv.js";
 import { extractVulnSymbols } from "./vuln/symbols.js";
-import type { ReachabilityResult, VulnSymbol } from "./vuln/types.js";
+import type { Advisory, ReachabilityResult, VulnSymbol } from "./vuln/types.js";
 import { parsePackageLock } from "./utils/packagelock.js";
 import { ReachableError } from "./utils/errors.js";
 
@@ -244,27 +244,70 @@ async function advisoriesForPackage(
   packageName: string,
   packageVersion: string,
   options: AnalyzeOptions,
-) {
+): Promise<{ advisories: Advisory[]; degradedToUnknown: boolean }> {
   const { cacheDir, ttlHours } = cacheSettings(options);
   const cacheKey = createCacheKey(packageName, packageVersion);
 
   if (!options.noCache) {
     const cached = getCached(cacheKey, cacheDir, ttlHours);
     if (cached) {
-      return cached;
+      return {
+        advisories: cached,
+        degradedToUnknown: false,
+      };
     }
   }
 
   if (options.dryRun) {
-    return [];
+    return {
+      advisories: [],
+      degradedToUnknown: false,
+    };
   }
 
-  const advisories = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
-  if (!options.noCache) {
-    setCache(cacheKey, advisories, cacheDir);
-  }
+  try {
+    const advisories = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
+    if (!options.noCache) {
+      setCache(cacheKey, advisories, cacheDir);
+    }
 
-  return advisories;
+    return {
+      advisories,
+      degradedToUnknown: false,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!options.noCache) {
+      const staleAdvisories = getCachedRegardlessOfTtl(cacheKey, cacheDir);
+      if (staleAdvisories) {
+        logger.warn(
+          {
+            error: message,
+            package: packageName,
+            version: packageVersion,
+          },
+          "Using stale advisory cache after OSV fetch failure",
+        );
+        return {
+          advisories: staleAdvisories,
+          degradedToUnknown: true,
+        };
+      }
+    }
+
+    logger.warn(
+      {
+        error: message,
+        package: packageName,
+        version: packageVersion,
+      },
+      "OSV advisory lookup failed; continuing without advisories",
+    );
+    return {
+      advisories: [],
+      degradedToUnknown: true,
+    };
+  }
 }
 
 function matchesSymbol(nodeName: string, exportedSymbol: string): boolean {
@@ -305,7 +348,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
   const results: ReachabilityResult[] = [];
 
   for (const installedPackage of installedPackages) {
-    const advisories = await advisoriesForPackage(installedPackage.name, installedPackage.version, options);
+    const { advisories, degradedToUnknown } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options);
 
     for (const advisory of advisories) {
       for (const vulnSymbol of extractVulnSymbols(advisory)) {
@@ -313,7 +356,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
           continue;
         }
 
-        if (vulnSymbol.exportedSymbol === null) {
+        if (degradedToUnknown || vulnSymbol.exportedSymbol === null) {
           results.push({
             advisory: vulnSymbol,
             status: "UNKNOWN",

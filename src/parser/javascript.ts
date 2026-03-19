@@ -47,20 +47,30 @@ function uniqueBy<T>(items: T[], keyFn: (item: T) => string): T[] {
   });
 }
 
-function exportNamesFromNode(node: Parser.SyntaxNode): string[] {
+function exportSource(node: Parser.SyntaxNode): string | null {
+  const match = node.text.match(/from\s+['"`]([^'"`]+)['"`]/);
+  return match?.[1] ?? null;
+}
+
+function exportsFromNode(node: Parser.SyntaxNode): ExportRef[] {
   if (node.type !== "export_statement") {
     return [];
   }
 
-  const exportedNames: string[] = [];
+  const exportedNames: ExportRef[] = [];
   const exportText = node.text;
   const exportClause = node.namedChildren.find((child) => child.type === "export_clause");
+  const source = exportSource(node);
 
   if (exportClause) {
     for (const specifier of exportClause.namedChildren.filter((child) => child.type === "export_specifier")) {
       const identifiers = specifier.namedChildren.filter((child) => child.type === "identifier");
       if (identifiers.length > 0) {
-        exportedNames.push(identifiers[identifiers.length - 1].text);
+        exportedNames.push({
+          name: identifiers[identifiers.length - 1].text,
+          line: lineOf(node),
+          ...(source ? { source } : {}),
+        });
       }
     }
   }
@@ -72,7 +82,10 @@ function exportNamesFromNode(node: Parser.SyntaxNode): string[] {
   if (declaration?.type === "function_declaration" || declaration?.type === "class_declaration") {
     const nameNode = declaration.childForFieldName("name");
     if (nameNode) {
-      exportedNames.push(exportText.startsWith("export default") ? "default" : nameNode.text);
+      exportedNames.push({
+        name: exportText.startsWith("export default") ? "default" : nameNode.text,
+        line: lineOf(node),
+      });
     }
   }
 
@@ -80,20 +93,31 @@ function exportNamesFromNode(node: Parser.SyntaxNode): string[] {
     for (const declarator of declaration.namedChildren.filter((child) => child.type === "variable_declarator")) {
       const nameNode = declarator.childForFieldName("name");
       if (nameNode) {
-        exportedNames.push(nameNode.text);
+        exportedNames.push({
+          name: nameNode.text,
+          line: lineOf(node),
+        });
       }
     }
   }
 
   if (exportText.startsWith("export *")) {
-    exportedNames.push("*");
+    exportedNames.push({
+      name: "*",
+      line: lineOf(node),
+      ...(source ? { source } : {}),
+      isWildcard: true,
+    });
   }
 
   if (exportText.startsWith("export default") && exportedNames.length === 0) {
-    exportedNames.push("default");
+    exportedNames.push({
+      name: "default",
+      line: lineOf(node),
+    });
   }
 
-  return uniqueBy(exportedNames, (name) => name);
+  return uniqueBy(exportedNames, (entry) => `${entry.name}:${entry.source ?? ""}:${entry.isWildcard ?? false}`);
 }
 
 export function extractRequireCalls(tree: Parser.Tree): ImportRef[] {
@@ -181,15 +205,10 @@ export function extractExportsWithLanguage(tree: Parser.Tree, language: unknown)
   const exports: ExportRef[] = [];
 
   for (const capture of captures) {
-    for (const name of exportNamesFromNode(capture.node)) {
-      exports.push({
-        name,
-        line: lineOf(capture.node),
-      });
-    }
+    exports.push(...exportsFromNode(capture.node));
   }
 
-  return uniqueBy(exports, (entry) => `${entry.name}:${entry.line}`);
+  return uniqueBy(exports, (entry) => `${entry.name}:${entry.line}:${entry.source ?? ""}:${entry.isWildcard ?? false}`);
 }
 
 export function parseJavaScriptFile(filePath: string): ParsedModule {

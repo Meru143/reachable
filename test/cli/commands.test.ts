@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const appendFileSyncMock = vi.fn();
 const analyzeMock = vi.fn();
 const loadConfigMock = vi.fn();
 const formatJsonMock = vi.fn();
@@ -14,6 +15,14 @@ const parseFileMock = vi.fn();
 const isNodeReachableMock = vi.fn();
 const findPathToMock = vi.fn();
 const ansiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    appendFileSync: appendFileSyncMock,
+  };
+});
 
 vi.mock("../../src/analyzer.js", () => ({
   analyze: analyzeMock,
@@ -63,6 +72,7 @@ describe("cli commands", () => {
     vi.clearAllMocks();
     vi.resetModules();
     process.exitCode = 0;
+    delete process.env.GITHUB_STEP_SUMMARY;
   });
 
   it("runs scan with merged config, formatter output, and failure threshold", async () => {
@@ -170,6 +180,58 @@ describe("cli commands", () => {
     expect(formatTableMock).not.toHaveBeenCalled();
     expect(stdoutWrite).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
+  });
+
+  it("writes a markdown summary when GITHUB_STEP_SUMMARY is set", async () => {
+    loadConfigMock.mockResolvedValue({
+      entry: [],
+      failOn: "high",
+      ignore: [],
+      devPackages: [],
+      cache: {
+        ttlHours: 24,
+        dir: ".reachable-cache",
+      },
+    });
+    analyzeMock.mockResolvedValue([
+      {
+        advisory: {
+          package: "lodash",
+          ghsaId: "GHSA-summary",
+          cvssScore: 8.1,
+          severity: "HIGH",
+          exportedSymbol: "trim",
+          affectedVersionRange: "",
+        },
+        status: "REACHABLE",
+        callPath: ["src/index.ts::module"],
+      },
+    ]);
+    formatTableMock.mockReturnValue("table output");
+    formatMarkdownMock.mockReturnValue("## Summary");
+    process.env.GITHUB_STEP_SUMMARY = "/tmp/reachable-summary.md";
+
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { scanCommand } = await import("../../src/cli/scan.js");
+
+    await scanCommand.parseAsync(["node", "scan", "--cwd", process.cwd()]);
+
+    expect(stdoutWrite).toHaveBeenCalledWith("table output\n");
+    expect(formatMarkdownMock).toHaveBeenCalledWith([
+      {
+        advisory: {
+          package: "lodash",
+          ghsaId: "GHSA-summary",
+          cvssScore: 8.1,
+          severity: "HIGH",
+          exportedSymbol: "trim",
+          affectedVersionRange: "",
+        },
+        status: "REACHABLE",
+        callPath: ["src/index.ts::module"],
+      },
+    ]);
+    expect(appendFileSyncMock).toHaveBeenCalledWith("/tmp/reachable-summary.md", "## Summary\n", "utf8");
   });
 
   it("prints graph output with import and export reachability", async () => {

@@ -14,13 +14,21 @@ export function createCacheKey(packageName: string, packageVersion: string): str
   return createHash("sha256").update(`${packageName}@${packageVersion}`).digest("hex");
 }
 
-export function getCached(key: string, cacheDir: string, ttlHours: number): Advisory[] | null {
+function readCacheRecord(key: string, cacheDir: string): CacheRecord | null {
   const cacheFile = path.join(cacheDir, `${key}.json`);
   if (!existsSync(cacheFile)) {
     return null;
   }
 
-  const payload = JSON.parse(readFileSync(cacheFile, "utf8")) as CacheRecord;
+  return JSON.parse(readFileSync(cacheFile, "utf8")) as CacheRecord;
+}
+
+export function getCached(key: string, cacheDir: string, ttlHours: number): Advisory[] | null {
+  const payload = readCacheRecord(key, cacheDir);
+  if (!payload) {
+    return null;
+  }
+
   const fetchedAt = new Date(payload.fetchedAt).getTime();
   const ttlMs = ttlHours * 60 * 60 * 1000;
 
@@ -29,6 +37,10 @@ export function getCached(key: string, cacheDir: string, ttlHours: number): Advi
   }
 
   return payload.advisories;
+}
+
+export function getCachedRegardlessOfTtl(key: string, cacheDir: string): Advisory[] | null {
+  return readCacheRecord(key, cacheDir)?.advisories ?? null;
 }
 
 export function setCache(key: string, data: Advisory[], cacheDir: string): void {

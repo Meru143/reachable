@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseFile } from "../parser/index.js";
 import { resolveImport } from "../parser/resolver.js";
 import { logger } from "../utils/logger.js";
+import type { ExportRef, ParsedModule } from "../parser/index.js";
 import type { CallGraph, CallNode } from "./types.js";
 
 function normalizeFilePath(filePath: string, cwd: string): string {
@@ -62,6 +63,89 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
   const visitedFiles = new Set<string>();
   const inProgressFiles = new Set<string>();
   const absoluteEntries = new Set(entryPoints.map((entry) => path.resolve(cwd, entry)));
+  const parsedFiles = new Map<string, ParsedModule | null>();
+  const resolvedExports = new Map<string, ExportRef[]>();
+
+  function parseModule(filePath: string): ParsedModule | null {
+    if (parsedFiles.has(filePath)) {
+      return parsedFiles.get(filePath) ?? null;
+    }
+
+    try {
+      const parsed = parseFile(filePath);
+      parsedFiles.set(filePath, parsed);
+      return parsed;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ error: message, file: filePath }, "Skipping file after parse failure");
+      parsedFiles.set(filePath, null);
+      return null;
+    }
+  }
+
+  function reexportTargets(parsed: ParsedModule, filePath: string): string[] {
+    const targets = new Set<string>();
+
+    for (const exportedSymbol of parsed.exports) {
+      if (!exportedSymbol.source) {
+        continue;
+      }
+
+      const resolvedImport = resolveImport(exportedSymbol.source, filePath, cwd);
+      if (!resolvedImport || !path.isAbsolute(resolvedImport) || !isSourceFile(resolvedImport)) {
+        continue;
+      }
+
+      targets.add(resolvedImport);
+    }
+
+    return [...targets];
+  }
+
+  function exportsForFile(filePath: string, trail = new Set<string>()): ExportRef[] {
+    if (resolvedExports.has(filePath)) {
+      return resolvedExports.get(filePath) ?? [];
+    }
+
+    if (trail.has(filePath)) {
+      return [];
+    }
+
+    const parsed = parseModule(filePath);
+    if (!parsed) {
+      return [];
+    }
+
+    const nextTrail = new Set(trail);
+    nextTrail.add(filePath);
+
+    const directExports = parsed.exports.filter((exportedSymbol) => !exportedSymbol.isWildcard);
+    const wildcardExports: ExportRef[] = [];
+
+    for (const exportedSymbol of parsed.exports.filter((entry) => entry.isWildcard && entry.source)) {
+      const resolvedImport = resolveImport(exportedSymbol.source!, filePath, cwd);
+      if (!resolvedImport || !path.isAbsolute(resolvedImport) || !isSourceFile(resolvedImport)) {
+        continue;
+      }
+
+      for (const targetExport of exportsForFile(resolvedImport, nextTrail)) {
+        if (targetExport.name === "default") {
+          continue;
+        }
+
+        wildcardExports.push({
+          name: targetExport.name,
+          line: exportedSymbol.line,
+        });
+      }
+    }
+
+    const deduped = [...directExports, ...wildcardExports].filter((entry, index, collection) =>
+      collection.findIndex((candidate) => candidate.name === entry.name) === index,
+    );
+    resolvedExports.set(filePath, deduped);
+    return deduped;
+  }
 
   function visitFile(filePath: string): void {
     const absoluteFile = path.resolve(cwd, filePath);
@@ -82,7 +166,11 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
     inProgressFiles.add(absoluteFile);
     visitedFiles.add(absoluteFile);
 
-    const parsed = parseFile(absoluteFile);
+    const parsed = parseModule(absoluteFile);
+    if (!parsed) {
+      inProgressFiles.delete(absoluteFile);
+      return;
+    }
     const relativeFile = normalizeFilePath(absoluteFile, cwd);
     const currentModuleId = moduleNodeId(absoluteFile, cwd);
 
@@ -98,7 +186,7 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
       graph.entryPoints.push(currentModuleId);
     }
 
-    for (const exportedSymbol of parsed.exports) {
+    for (const exportedSymbol of exportsForFile(absoluteFile)) {
       const exportedNodeId = exportNodeId(absoluteFile, exportedSymbol.name, cwd);
       ensureNode(graph, {
         id: exportedNodeId,
@@ -155,6 +243,20 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
         isEntryPoint: absoluteEntries.has(resolvedImport),
       });
       addEdge(graph, { from: currentModuleId, to: targetModuleId, importedFrom: importedModule.source }, edgeSet);
+      visitFile(resolvedImport);
+    }
+
+    for (const resolvedImport of reexportTargets(parsed, absoluteFile)) {
+      const targetModuleId = moduleNodeId(resolvedImport, cwd);
+      ensureNode(graph, {
+        id: targetModuleId,
+        file: normalizeFilePath(resolvedImport, cwd),
+        name: "module",
+        line: 1,
+        isEntryPoint: absoluteEntries.has(resolvedImport),
+      });
+      const exportSource = parsed.exports.find((entry) => entry.source && resolveImport(entry.source, absoluteFile, cwd) === resolvedImport)?.source;
+      addEdge(graph, { from: currentModuleId, to: targetModuleId, importedFrom: exportSource ?? normalizeFilePath(resolvedImport, cwd) }, edgeSet);
       visitFile(resolvedImport);
     }
 

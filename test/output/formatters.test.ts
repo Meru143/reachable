@@ -70,6 +70,7 @@ describe("output formatters", () => {
 
     expect(markdown).toContain("| Reachable | Unknown | Unreachable |");
     expect(markdown).toContain("## Reachable");
+    expect(markdown).toContain("could not be confirmed as reachable or unreachable.");
     expect(markdown).toContain("Path: `src/index.ts::module -> src/index.ts::call:lodash.trim:12`");
     expect(markdown).toContain("<details>");
     expect(markdown).toContain("[GHSA-reachable](https://github.com/advisories/GHSA-reachable)");

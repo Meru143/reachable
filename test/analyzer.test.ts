@@ -11,6 +11,7 @@ import {
   detectEntryPoints,
 } from "../src/analyzer.js";
 import { ReachableError } from "../src/utils/errors.js";
+import { createCacheKey } from "../src/vuln/cache.js";
 import { fixturePath } from "./helpers.js";
 import type { Advisory } from "../src/vuln/types.js";
 
@@ -215,5 +216,34 @@ describe("analyzer", () => {
     });
 
     expect(results.map((result) => result.advisory.package).sort()).toEqual(["lodash", "minimist"]);
+  });
+
+  it("marks stale cached advisories as unknown when OSV fetch fails", async () => {
+    const cacheDir = path.join(makeTempDir(), ".reachable-cache");
+    const cacheKey = createCacheKey("lodash", "4.17.20");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      path.join(cacheDir, `${cacheKey}.json`),
+      JSON.stringify(
+        {
+          fetchedAt: "2000-01-01T00:00:00.000Z",
+          advisories: [advisoryFor("lodash", "trim", "GHSA-stale-cache")],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    nock("https://api.osv.dev").post("/v1/querybatch").reply(400, "bad request");
+
+    const results = await analyze({
+      cwd: fixturePath("simple-express"),
+      cacheDir,
+      cacheTtlHours: 0,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("UNKNOWN");
+    expect(results[0]?.advisory.ghsaId).toBe("GHSA-stale-cache");
   });
 });

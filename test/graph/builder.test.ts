@@ -91,4 +91,85 @@ describe("graph/builder", () => {
     expect(graph.nodes.has("src/b.ts::module")).toBe(true);
     expect(warnSpy).toHaveBeenCalledWith({ file: fileA }, "Circular import detected");
   });
+
+  it("logs parse failures and continues building the graph", () => {
+    const cwd = makeTempDir();
+    const entryFile = writeProjectFile(
+      cwd,
+      path.join("src", "index.ts"),
+      `
+        import { healthy } from "./healthy";
+        export function run() {
+          return healthy();
+        }
+      `,
+    );
+    const healthyFile = writeProjectFile(
+      cwd,
+      path.join("src", "healthy.ts"),
+      `
+        export function healthy() {
+          return "ok";
+        }
+      `,
+    );
+    const unsupportedFile = writeProjectFile(cwd, path.join("src", "broken.json"), "{\"ok\":true}\n");
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger as never);
+
+    const graph = buildGraph([entryFile, healthyFile, unsupportedFile], [entryFile], cwd);
+
+    expect(graph.nodes.has("src/index.ts::module")).toBe(true);
+    expect(graph.nodes.has("src/healthy.ts::module")).toBe(true);
+    expect(graph.edges).toContainEqual({
+      from: "src/index.ts::module",
+      to: "src/healthy.ts::module",
+      importedFrom: "./healthy",
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        error: "Unsupported file extension: .json",
+        file: unsupportedFile,
+      },
+      "Skipping file after parse failure",
+    );
+  });
+
+  it("resolves wildcard re-exports to the target module exports", () => {
+    const cwd = makeTempDir();
+    const entryFile = writeProjectFile(
+      cwd,
+      path.join("src", "index.ts"),
+      `
+        import { trim } from "./barrel";
+        export function run() {
+          return trim();
+        }
+      `,
+    );
+    const barrelFile = writeProjectFile(
+      cwd,
+      path.join("src", "barrel.ts"),
+      `
+        export * from "./leaf";
+      `,
+    );
+    const leafFile = writeProjectFile(
+      cwd,
+      path.join("src", "leaf.ts"),
+      `
+        export function trim() {
+          return "ok";
+        }
+      `,
+    );
+
+    const graph = buildGraph([entryFile, barrelFile, leafFile], [entryFile], cwd);
+
+    expect(graph.edges).toContainEqual({
+      from: "src/barrel.ts::module",
+      to: "src/leaf.ts::module",
+      importedFrom: "./leaf",
+    });
+    expect(graph.nodes.has("src/barrel.ts::trim")).toBe(true);
+  });
 });
