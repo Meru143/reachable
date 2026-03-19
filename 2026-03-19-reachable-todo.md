@@ -141,42 +141,42 @@
 ## Phase 4: Vulnerability Fetcher
 
 ### 4.1 OSV API Client
-- [ ] Create `src/vuln/osv.ts`
-- [ ] Implement `queryBatch(packages: {name: string; version: string; ecosystem: string}[]): Promise<Advisory[]>`
-- [ ] Build request body: `{ queries: packages.map(p => ({ package: { name: p.name, ecosystem: p.ecosystem }, version: p.version })) }`
-- [ ] POST to `https://api.osv.dev/v1/querybatch` with `Content-Type: application/json`
-- [ ] Set `User-Agent: reachable/<version>` header on all requests
-- [ ] Parse response `results[].vulns` array from each batch result
-- [ ] Implement retry logic: on HTTP 429, wait `retryAfterMs` (from `Retry-After` header or 2000ms) and retry up to 3 times
-- [ ] On HTTP 5xx, retry with exponential backoff: 2s, 4s, 8s
-- [ ] Throw `OsvApiError` with status code and message on non-retryable failure
+- [x] Create `src/vuln/osv.ts`
+- [x] Implement `queryBatch(packages: {name: string; version: string; ecosystem: string}[]): Promise<Advisory[]>`
+- [x] Build request body: `{ queries: packages.map(p => ({ package: { name: p.name, ecosystem: p.ecosystem }, version: p.version })) }`
+- [x] POST to `https://api.osv.dev/v1/querybatch` with `Content-Type: application/json`
+- [x] Set `User-Agent: reachable/<version>` header on all requests
+- [x] Parse response `results[].vulns` array from each batch result
+- [x] Implement retry logic: on HTTP 429, wait `retryAfterMs` (from `Retry-After` header or 2000ms) and retry up to 3 times
+- [x] On HTTP 5xx, retry with exponential backoff: 2s, 4s, 8s
+- [x] Throw `OsvApiError` with status code and message on non-retryable failure
 
 ### 4.2 Advisory Cache
-- [ ] Create `src/vuln/cache.ts`
-- [ ] Implement `getCached(key: string, cacheDir: string, ttlHours: number): Advisory[] | null`
-- [ ] Cache key format: `sha256(packageName + "@" + packageVersion).hex`
-- [ ] Store cache file at `<cacheDir>/<key>.json` containing `{ fetchedAt: ISO8601, advisories: Advisory[] }`
-- [ ] Compare `fetchedAt` against `Date.now()` to determine expiry
-- [ ] Implement `setCache(key: string, data: Advisory[], cacheDir: string): void`
-- [ ] Create `cacheDir` with `fs.mkdirSync(dir, { recursive: true })` if not exists
-- [ ] Implement `clearCache(cacheDir: string): void` for `--no-cache` flag
+- [x] Create `src/vuln/cache.ts`
+- [x] Implement `getCached(key: string, cacheDir: string, ttlHours: number): Advisory[] | null`
+- [x] Cache key format: `sha256(packageName + "@" + packageVersion).hex`
+- [x] Store cache file at `<cacheDir>/<key>.json` containing `{ fetchedAt: ISO8601, advisories: Advisory[] }`
+- [x] Compare `fetchedAt` against `Date.now()` to determine expiry
+- [x] Implement `setCache(key: string, data: Advisory[], cacheDir: string): void`
+- [x] Create `cacheDir` with `fs.mkdirSync(dir, { recursive: true })` if not exists
+- [x] Implement `clearCache(cacheDir: string): void` for `--no-cache` flag
 
 ### 4.3 Symbol Extractor
-- [ ] Create `src/vuln/symbols.ts`
-- [ ] Implement `extractVulnSymbols(advisory: Advisory): VulnSymbol[]`
-- [ ] Check `advisory.affected[].ecosystem_specific.imports` for structured symbol list (OSV schema field)
-- [ ] If structured data absent, attempt regex extraction from `advisory.details` text: match patterns like `` `functionName()` `` or `"functionName"` near "vulnerable" or "affected"
-- [ ] Return `exportedSymbol: null` when symbol cannot be determined
-- [ ] Map OSV CVSS score to `severity`: `>= 9.0` → CRITICAL, `>= 7.0` → HIGH, `>= 4.0` → MODERATE, `< 4.0` → LOW
+- [x] Create `src/vuln/symbols.ts`
+- [x] Implement `extractVulnSymbols(advisory: Advisory): VulnSymbol[]`
+- [x] Check `advisory.affected[].ecosystem_specific.imports` for structured symbol list (OSV schema field)
+- [x] If structured data absent, attempt regex extraction from `advisory.details` text: match patterns like `` `functionName()` `` or `"functionName"` near "vulnerable" or "affected"
+- [x] Return `exportedSymbol: null` when symbol cannot be determined
+- [x] Map OSV CVSS score to `severity`: `>= 9.0` → CRITICAL, `>= 7.0` → HIGH, `>= 4.0` → MODERATE, `< 4.0` → LOW
 
 ### 4.4 Package Lock Parser
-- [ ] Create `src/utils/packagelock.ts`
-- [ ] Implement `parsePackageLock(cwd: string): InstalledPackage[]`
-- [ ] Detect lockfile version: v2 uses `dependencies` key, v3 uses `packages` key
-- [ ] Parse v3 format: iterate `packages` object, skip `""` (root), extract `name` from key and `version` from value
-- [ ] Parse v2 format: recursively walk `dependencies` tree
-- [ ] Deduplicate packages by name (use resolved version)
-- [ ] Filter out `devDependencies` based on config unless `--include-dev` flag set
+- [x] Create `src/utils/packagelock.ts`
+- [x] Implement `parsePackageLock(cwd: string): InstalledPackage[]`
+- [x] Detect lockfile version: v2 uses `dependencies` key, v3 uses `packages` key
+- [x] Parse v3 format: iterate `packages` object, skip `""` (root), extract `name` from key and `version` from value
+- [x] Parse v2 format: recursively walk `dependencies` tree
+- [x] Deduplicate packages by name (use resolved version)
+- [x] Filter out `devDependencies` based on config unless `--include-dev` flag set
 
 ---
 

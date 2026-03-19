@@ -7,3 +7,4 @@ coverage/
 .claude/
 skills-lock.json
 .tmp-parser-check/
+.tmp-vuln-check/
