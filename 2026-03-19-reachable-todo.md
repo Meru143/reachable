@@ -312,22 +312,22 @@
 - [x] Test `isNodeReachable` returns false for isolated node
 
 ### 9.3 Vuln Tests
-- [ ] Create `test/vuln/cache.test.ts`
-- [ ] Test write + read cycle in temp directory
-- [ ] Test expired entry (set `fetchedAt` to 48h ago with 24h TTL) returns null
-- [ ] Create `test/vuln/symbols.test.ts`
-- [ ] Test extraction from fixture OSV advisory with `ecosystem_specific.imports`
-- [ ] Test null return when advisory has no structured symbol and no text match
-- [ ] Create `test/vuln/osv.test.ts` using `nock` to intercept HTTP
-- [ ] Test successful batch query returns mapped advisories
-- [ ] Test HTTP 429 triggers retry with backoff
-- [ ] Test HTTP 500 triggers retry, then throws `OsvApiError`
+- [x] Create `test/vuln/cache.test.ts`
+- [x] Test write + read cycle in temp directory
+- [x] Test expired entry (set `fetchedAt` to 48h ago with 24h TTL) returns null
+- [x] Create `test/vuln/symbols.test.ts`
+- [x] Test extraction from fixture OSV advisory with `ecosystem_specific.imports`
+- [x] Test null return when advisory has no structured symbol and no text match
+- [x] Create `test/vuln/osv.test.ts` using `nock` to intercept HTTP
+- [x] Test successful batch query returns mapped advisories
+- [x] Test HTTP 429 triggers retry with backoff
+- [x] Test HTTP 500 triggers retry, then throws `OsvApiError`
 
 ### 9.4 Output Tests
-- [ ] Create `test/output/sarif.test.ts`
-- [ ] Assert SARIF output contains correct `version: "2.1.0"`
-- [ ] Assert each REACHABLE result maps to a SARIF result object
-- [ ] Assert UNREACHABLE results are NOT included in SARIF output
+- [x] Create `test/output/sarif.test.ts`
+- [x] Assert SARIF output contains correct `version: "2.1.0"`
+- [x] Assert each REACHABLE result maps to a SARIF result object
+- [x] Assert UNREACHABLE results are NOT included in SARIF output
 
 ---
 

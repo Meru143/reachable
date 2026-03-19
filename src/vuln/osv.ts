@@ -1,7 +1,6 @@
 // OSV REST API client (POST /v1/querybatch).
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { fetch } from "undici";
 import packageJson from "../../package.json";
 
 import { OsvApiError } from "../utils/errors.js";
