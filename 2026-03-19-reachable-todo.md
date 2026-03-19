@@ -354,23 +354,23 @@
 ## Phase 11: CI/CD Pipeline
 
 ### 11.1 GitHub Actions CI
-- [ ] Create `.github/workflows/ci.yml`
-- [ ] Add `on: [push, pull_request]` trigger
-- [ ] Add job `lint` running `npm run lint`
-- [ ] Add job `typecheck` running `npx tsc --noEmit`
-- [ ] Add job `test` running `npx vitest run --coverage`
-- [ ] Add job `build` running `npm run build`
-- [ ] Set up Node.js matrix: 18.x, 20.x, 22.x
-- [ ] Upload coverage report to Codecov with `codecov/codecov-action@v4`
+- [x] Create `.github/workflows/ci.yml`
+- [x] Add `on: [push, pull_request]` trigger
+- [x] Add job `lint` running `npm run lint`
+- [x] Add job `typecheck` running `npx tsc --noEmit`
+- [x] Add job `test` running `npx vitest run --coverage`
+- [x] Add job `build` running `npm run build`
+- [x] Set up Node.js matrix: 18.x, 20.x, 22.x
+- [x] Upload coverage report to Codecov with `codecov/codecov-action@v4`
 
 ### 11.2 Release Workflow
-- [ ] Create `.github/workflows/release.yml`
-- [ ] Trigger on `workflow_dispatch` and `push` to `main` with conventional commits
-- [ ] Run `semantic-release` with `NPM_TOKEN` secret
+- [x] Create `.github/workflows/release.yml`
+- [x] Trigger on `workflow_dispatch` and `push` to `main` with conventional commits
+- [x] Run `semantic-release` with `NPM_TOKEN` secret
 
 ### 11.3 Security
-- [ ] Add `npm audit --audit-level=high` step to CI job
-- [ ] Add CodeQL analysis workflow targeting JavaScript/TypeScript
+- [x] Add `npm audit --audit-level=high` step to CI job
+- [x] Add CodeQL analysis workflow targeting JavaScript/TypeScript
 
 ---
 

@@ -1,15 +1,23 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
