@@ -8,3 +8,4 @@ coverage/
 skills-lock.json
 .tmp-parser-check/
 .tmp-vuln-check/
+.tmp-analyzer-check/

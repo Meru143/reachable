@@ -183,23 +183,23 @@
 ## Phase 5: Reachability Analyzer
 
 ### 5.1 Core Analyzer
-- [ ] Create `src/analyzer.ts`
-- [ ] Implement `analyze(options: AnalyzeOptions): Promise<ReachabilityResult[]>`
-- [ ] Step 1: Call `parsePackageLock()` to get all installed packages
-- [ ] Step 2: Call `queryBatch()` (with cache) to fetch all advisories
-- [ ] Step 3: For each advisory, call `extractVulnSymbols()` to get vulnerable symbol
-- [ ] Step 4: Call `buildGraph()` on all project source files
-- [ ] Step 5: For each advisory with a known symbol, call `isNodeReachable()` → REACHABLE or UNREACHABLE
-- [ ] Step 6: For advisories with `exportedSymbol: null`, classify as UNKNOWN
-- [ ] Return sorted results: REACHABLE first, then UNKNOWN, then UNREACHABLE
+- [x] Create `src/analyzer.ts`
+- [x] Implement `analyze(options: AnalyzeOptions): Promise<ReachabilityResult[]>`
+- [x] Step 1: Call `parsePackageLock()` to get all installed packages
+- [x] Step 2: Call `queryBatch()` (with cache) to fetch all advisories
+- [x] Step 3: For each advisory, call `extractVulnSymbols()` to get vulnerable symbol
+- [x] Step 4: Call `buildGraph()` on all project source files
+- [x] Step 5: For each advisory with a known symbol, call `isNodeReachable()` → REACHABLE or UNREACHABLE
+- [x] Step 6: For advisories with `exportedSymbol: null`, classify as UNKNOWN
+- [x] Return sorted results: REACHABLE first, then UNKNOWN, then UNREACHABLE
 
 ### 5.2 Entry Point Auto-Detection
-- [ ] Read `package.json` at `cwd`
-- [ ] Check `main` field — resolve to absolute path if present
-- [ ] Check `exports["."]` or `exports["./index"]` — parse conditional exports, prefer `require` or `default`
-- [ ] Check `bin` field values — each binary is also an entry point
-- [ ] Scan for `src/index.ts`, `index.ts`, `app.ts` as fallback heuristics
-- [ ] Log warning when no entry point found and none specified via `--entry`
+- [x] Read `package.json` at `cwd`
+- [x] Check `main` field — resolve to absolute path if present
+- [x] Check `exports["."]` or `exports["./index"]` — parse conditional exports, prefer `require` or `default`
+- [x] Check `bin` field values — each binary is also an entry point
+- [x] Scan for `src/index.ts`, `index.ts`, `app.ts` as fallback heuristics
+- [x] Log warning when no entry point found and none specified via `--entry`
 
 ---
 

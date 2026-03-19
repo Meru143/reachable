@@ -31,6 +31,10 @@ function isTestFile(filePath: string): boolean {
   return /\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/");
 }
 
+function isSourceFile(filePath: string): boolean {
+  return /\.[cm]?[jt]sx?$/.test(filePath);
+}
+
 function ensureNode(graph: CallGraph, node: CallNode): void {
   if (!graph.nodes.has(node.id)) {
     graph.nodes.set(node.id, node);
@@ -135,6 +139,10 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
           isEntryPoint: false,
         });
         addEdge(graph, { from: currentModuleId, to: packageId, importedFrom: importedModule.source }, edgeSet);
+        continue;
+      }
+
+      if (!isSourceFile(resolvedImport)) {
         continue;
       }
 
