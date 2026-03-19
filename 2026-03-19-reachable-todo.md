@@ -34,9 +34,9 @@
 - [x] Create `.github/workflows/` directory
 
 ### 1.3 TypeScript Setup
-- [ ] Run `npm install --save-dev typescript@5 @types/node`
-- [ ] Create `tsconfig.json` with `"module": "ESNext"`, `"moduleResolution": "bundler"`, `"target": "ES2022"`, `"strict": true`
-- [ ] Create `tsup.config.ts` with entry `src/cli/index.ts`, format `["cjs"]`, `dts: true`, `outDir: "dist"`
+- [x] Run `npm install --save-dev typescript@5 @types/node`
+- [x] Create `tsconfig.json` with `"module": "ESNext"`, `"moduleResolution": "bundler"`, `"target": "ES2022"`, `"strict": true`
+- [x] Create `tsup.config.ts` with entry `src/cli/index.ts`, format `["cjs"]`, `dts: true`, `outDir: "dist"`
 
 ### 1.4 CLI Framework Setup
 - [ ] Run `npm install commander@12`
