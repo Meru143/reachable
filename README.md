@@ -27,7 +27,7 @@ npm install -g @merupatel/reachable
 Run without installing globally:
 
 ```bash
-npx reachable scan
+npx @merupatel/reachable@latest scan
 ```
 
 ## Quick Start
@@ -150,7 +150,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx reachable scan --format markdown --fail-on high
+      - run: npx @merupatel/reachable@latest scan --format markdown --fail-on high
 ```
 
 Use `--format sarif` to feed GitHub code scanning or `--format markdown` to post PR-friendly summaries.
