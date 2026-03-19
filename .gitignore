@@ -2,3 +2,7 @@ node_modules/
 dist/
 .reachable-cache/
 coverage/
+.agent/
+.agents/
+.claude/
+skills-lock.json
