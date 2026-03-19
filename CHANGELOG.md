@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/Meru143/reachable/compare/v1.0.0...v1.0.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* prefer source entrypoints over dist artifacts ([50ec9da](https://github.com/Meru143/reachable/commit/50ec9da6879e4cbed3b3563dbd3202d639bf5642))
+
 # 1.0.0 (2026-03-19)
 
 
