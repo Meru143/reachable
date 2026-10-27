@@ -253,7 +253,7 @@ async function advisoriesForPackage(
   packageVersion: string,
   options: AnalyzeOptions,
   fetched: Map<string, Promise<Advisory>>,
-): Promise<{ advisories: Advisory[]; degradedToUnknown: boolean }> {
+): Promise<{ advisories: Advisory[]; degraded: Set<string> }> {
   const { cacheDir, ttlHours } = cacheSettings(options);
   const cacheKey = createCacheKey(packageName, packageVersion);
 
@@ -262,7 +262,7 @@ async function advisoriesForPackage(
     if (cached) {
       return {
         advisories: cached,
-        degradedToUnknown: false,
+        degraded: new Set(),
       };
     }
   }
@@ -270,20 +270,40 @@ async function advisoriesForPackage(
   if (options.dryRun) {
     return {
       advisories: [],
-      degradedToUnknown: false,
+      degraded: new Set(),
     };
   }
 
   try {
     const ids = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
-    const advisories = await fetchVulns(ids, fetched);
-    if (!options.noCache) {
-      setCache(cacheKey, advisories, cacheDir);
+    const { advisories, failed } = await fetchVulns(ids, fetched);
+    if (failed.length === 0) {
+      if (!options.noCache) {
+        setCache(cacheKey, advisories, cacheDir);
+      }
+
+      return {
+        advisories,
+        degraded: new Set(),
+      };
     }
 
+    // Keep the records that arrived. A failed one comes from the stale cache when it has it, and is left out
+    // otherwise. A partial result is not cached, so the next run retries.
+    const stale = options.noCache ? [] : getCachedRegardlessOfTtl(cacheKey, cacheDir) ?? [];
+    const staleRecords = stale.filter((advisory) => failed.some((entry) => entry.id === advisory.id));
+    logger.warn(
+      {
+        package: packageName,
+        version: packageVersion,
+        failed: failed.map(({ id, error }) => `${id}: ${error instanceof Error ? error.message : String(error)}`),
+        fromStaleCache: staleRecords.map((advisory) => advisory.id),
+      },
+      "Some OSV advisory records could not be fetched",
+    );
     return {
-      advisories,
-      degradedToUnknown: false,
+      advisories: [...advisories, ...staleRecords],
+      degraded: new Set(staleRecords.map((advisory) => advisory.id)),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -300,7 +320,7 @@ async function advisoriesForPackage(
         );
         return {
           advisories: staleAdvisories,
-          degradedToUnknown: true,
+          degraded: new Set(staleAdvisories.map((advisory) => advisory.id)),
         };
       }
     }
@@ -315,7 +335,7 @@ async function advisoriesForPackage(
     );
     return {
       advisories: [],
-      degradedToUnknown: true,
+      degraded: new Set(),
     };
   }
 }
@@ -578,7 +598,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
   const results: ReachabilityResult[] = [];
 
   for (const installedPackage of installedPackages) {
-    const { advisories, degradedToUnknown } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options, fetched);
+    const { advisories, degraded } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options, fetched);
 
     for (const advisory of advisories) {
       for (const { confident, ...vulnSymbol } of extractVulnSymbols(advisory, installedPackage.name)) {
@@ -588,7 +608,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
 
         results.push({
           advisory: vulnSymbol,
-          ...verdict(installedPackage, vulnSymbol.exportedSymbol, confident, degradedToUnknown),
+          ...verdict(installedPackage, vulnSymbol.exportedSymbol, confident, degraded.has(advisory.id)),
         });
       }
     }

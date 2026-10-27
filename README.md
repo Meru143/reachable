@@ -126,7 +126,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 - `.vue`, `.svelte` and `.astro` files are not parsed. If one mentions the function's name, the verdict stays `UNKNOWN`. Other formats (templates, `.mdx`) are not read.
 - A call through a name computed at runtime (`_[name]()`) is not seen, in your code or in the package's.
 - In TypeScript files only `import` statements are read; a package loaded there with `require` looks not imported (`UNKNOWN`).
-- If an OSV lookup fails and nothing is cached for the package, its advisories are left out of the results; a warning is logged to stderr.
+- If an OSV lookup fails and nothing is cached, the advisories it would have returned are left out of the results; a warning is logged to stderr. When only some advisory records fail, the others are still reported.
 - OSV gives CVSS as a vector, so `cvssScore` is the floor of the advisory's GitHub severity band (`HIGH` is 7.0) unless OSV carries a numeric score.
 
 ## What changed in 1.0.12

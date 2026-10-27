@@ -81,21 +81,36 @@ export async function queryBatch(packages: { name: string; version: string; ecos
 }
 
 /**
- * Full OSV records for the given ids, each id fetched once and at most VULN_CONCURRENCY at a time.
+ * Full OSV records for the given ids, each id fetched once and at most VULN_CONCURRENCY at a time. A failed id
+ * (after retries) is listed in `failed` without losing the records that did arrive.
  * Share `fetched` across calls to fetch an id once per run.
  */
-export async function fetchVulns(ids: string[], fetched = new Map<string, Promise<Advisory>>()): Promise<Advisory[]> {
+export async function fetchVulns(
+  ids: string[],
+  fetched = new Map<string, Promise<Advisory>>(),
+): Promise<{ advisories: Advisory[]; failed: Array<{ id: string; error: unknown }> }> {
   const uniqueIds = [...new Set(ids)];
   const advisories: Advisory[] = [];
+  const failed: Array<{ id: string; error: unknown }> = [];
 
   for (let start = 0; start < uniqueIds.length; start += VULN_CONCURRENCY) {
-    const batch = uniqueIds.slice(start, start + VULN_CONCURRENCY).map((id) => {
-      const pending = fetched.get(id) ?? requestJson<Advisory>(`${OSV_VULN_URL}${encodeURIComponent(id)}`);
-      fetched.set(id, pending);
-      return pending;
+    const batchIds = uniqueIds.slice(start, start + VULN_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batchIds.map((id) => {
+        const pending = fetched.get(id) ?? requestJson<Advisory>(`${OSV_VULN_URL}${encodeURIComponent(id)}`);
+        fetched.set(id, pending);
+        return pending;
+      }),
+    );
+
+    settled.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        advisories.push(result.value);
+      } else {
+        failed.push({ id: batchIds[index] ?? "", error: result.reason });
+      }
     });
-    advisories.push(...(await Promise.all(batch)));
   }
 
-  return advisories;
+  return { advisories, failed };
 }

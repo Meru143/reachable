@@ -101,9 +101,10 @@ describe("vuln/osv", () => {
     const { calls } = stubVulnFetch();
     const { fetchVulns } = await import("../../src/vuln/osv.js");
 
-    const advisories = await fetchVulns(["GHSA-a", "GHSA-b", "GHSA-a"]);
+    const { advisories, failed } = await fetchVulns(["GHSA-a", "GHSA-b", "GHSA-a"]);
 
     expect(advisories.map((advisory) => advisory.id)).toEqual(["GHSA-a", "GHSA-b"]);
+    expect(failed).toEqual([]);
     expect(advisories[0]?.affected?.[0]?.package?.name).toBe("lodash");
     expect(calls).toEqual(["GHSA-a", "GHSA-b"]);
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://api.osv.dev/v1/vulns/GHSA-a");
@@ -122,7 +123,7 @@ describe("vuln/osv", () => {
     expect(stats.maxInFlight).toBe(8);
   });
 
-  it("retries a record lookup like the batch query and throws after the last attempt", async () => {
+  it("retries a record lookup like the batch query and reports it as failed after the last attempt", async () => {
     vi.doMock("node:timers/promises", () => ({
       setTimeout: () => Promise.resolve(),
     }));
@@ -137,16 +138,22 @@ describe("vuln/osv", () => {
     });
     const { fetchVulns } = await import("../../src/vuln/osv.js");
 
-    await expect(fetchVulns(["GHSA-flaky"])).resolves.toMatchObject([{ id: "GHSA-flaky" }]);
-    await expect(fetchVulns(["GHSA-down"])).rejects.toMatchObject({ name: OsvApiError.name, statusCode: 500 });
+    await expect(fetchVulns(["GHSA-flaky"])).resolves.toMatchObject({ advisories: [{ id: "GHSA-flaky" }], failed: [] });
+    await expect(fetchVulns(["GHSA-down"])).resolves.toMatchObject({
+      advisories: [],
+      failed: [{ id: "GHSA-down", error: { name: OsvApiError.name, statusCode: 500 } }],
+    });
     expect(calls.filter((id) => id === "GHSA-flaky")).toHaveLength(3);
     expect(calls.filter((id) => id === "GHSA-down")).toHaveLength(4);
   });
 
-  it("throws OsvApiError when a record does not exist", async () => {
-    stubVulnFetch(() => new Response('{"code":5,"message":"Bug not found."}', { status: 404 }));
+  it("keeps the records that arrived when another lookup fails", async () => {
+    stubVulnFetch((id) => (id === "GHSA-gone" ? new Response('{"code":5,"message":"Bug not found."}', { status: 404 }) : json(advisoryFixture(id))));
     const { fetchVulns } = await import("../../src/vuln/osv.js");
 
-    await expect(fetchVulns(["GHSA-gone"])).rejects.toMatchObject({ name: OsvApiError.name, statusCode: 404 });
+    const { advisories, failed } = await fetchVulns(["GHSA-a", "GHSA-gone", "GHSA-b"]);
+
+    expect(advisories.map((advisory) => advisory.id)).toEqual(["GHSA-a", "GHSA-b"]);
+    expect(failed).toMatchObject([{ id: "GHSA-gone", error: { name: OsvApiError.name, statusCode: 404 } }]);
   });
 });

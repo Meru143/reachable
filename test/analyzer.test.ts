@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -496,6 +496,43 @@ describe("analyzer", () => {
     expect(results[0]?.status).toBe("UNKNOWN");
     expect(results[0]?.reason).toBe("lookup-failed");
     expect(results[0]?.advisory.ghsaId).toBe("GHSA-stale-cache");
+  });
+
+  it("reports the records that arrived when another record lookup fails, without caching the partial result", async () => {
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    nock("https://api.osv.dev")
+      .post("/v1/querybatch")
+      .reply(200, { results: [{ vulns: [{ id: "GHSA-35jh-r3h4-6jhm" }, { id: "GHSA-gone" }] }] })
+      .get("/v1/vulns/GHSA-35jh-r3h4-6jhm")
+      .reply(200, templateAdvisory)
+      .get("/v1/vulns/GHSA-gone")
+      .reply(404, { code: 5, message: "Bug not found." });
+
+    const results = await analyze({ cwd });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+    expect(existsSync(path.join(cwd, ".reachable-cache"))).toBe(false);
+  });
+
+  it("falls back to the stale cached record for a record lookup that fails", async () => {
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    writeProjectFile(
+      cwd,
+      path.join(".reachable-cache", `${createCacheKey("lodash", "4.17.20")}.json`),
+      JSON.stringify({ fetchedAt: "2000-01-01T00:00:00.000Z", advisories: [textAdvisory("GHSA-gone", "ReDoS via the `trim` function.", "MODERATE")] }),
+    );
+    nock("https://api.osv.dev")
+      .post("/v1/querybatch")
+      .reply(200, { results: [{ vulns: [{ id: "GHSA-35jh-r3h4-6jhm" }, { id: "GHSA-gone" }] }] })
+      .get("/v1/vulns/GHSA-35jh-r3h4-6jhm")
+      .reply(200, templateAdvisory)
+      .get("/v1/vulns/GHSA-gone")
+      .reply(404, { code: 5, message: "Bug not found." });
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([
+      ["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined],
+      ["GHSA-gone", "trim", "UNKNOWN", "lookup-failed"],
+    ]);
   });
 
   it("never uses the id-only records 1.0.11 and earlier cached, fresh or stale", async () => {
