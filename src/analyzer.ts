@@ -213,7 +213,7 @@ export function detectEntryPoints(cwd: string, explicitEntries?: string[]): stri
   return [...new Set(entryPoints)];
 }
 
-export function collectSourceFiles(cwd: string): string[] {
+export function collectSourceFiles(cwd: string, pattern = /\.[cm]?[jt]sx?$/): string[] {
   const sourceFiles: string[] = [];
   const ignoredDirectories = new Set(["node_modules", "dist", "coverage", ".git", ".reachable-cache"]);
 
@@ -231,7 +231,7 @@ export function collectSourceFiles(cwd: string): string[] {
         continue;
       }
 
-      if (/\.[cm]?[jt]sx?$/.test(entry)) {
+      if (pattern.test(entry)) {
         sourceFiles.push(fullPath);
       }
     }
@@ -489,12 +489,16 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
     return !localNames.some((localName) => code.usedNames.has(localName));
   };
 
-  // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph.
+  // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph, and
+  // .vue, .svelte and .astro files are not parsed at all, so any mention there counts too.
   const mentionedInReachableCode = (symbol: string): boolean => {
-    reachableSources ??= [...findReachableNodes(graph, Number.POSITIVE_INFINITY)]
-      .map((id) => graph.nodes.get(id))
-      .filter((node): node is NonNullable<typeof node> => node?.name === "module" && !node.id.startsWith("pkg:"))
-      .map((node) => readFileSync(path.resolve(cwd, node.file), "utf8"));
+    reachableSources ??= [
+      ...[...findReachableNodes(graph, Number.POSITIVE_INFINITY)]
+        .map((id) => graph.nodes.get(id))
+        .filter((node): node is NonNullable<typeof node> => node?.name === "module" && !node.id.startsWith("pkg:"))
+        .map((node) => path.resolve(cwd, node.file)),
+      ...collectSourceFiles(cwd, /\.(vue|svelte|astro)$/),
+    ].map((file) => readFileSync(file, "utf8"));
     const pattern = new RegExp(String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`);
     return reachableSources.some((source) => pattern.test(source));
   };

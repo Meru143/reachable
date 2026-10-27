@@ -100,13 +100,14 @@ describe("parser/javascript", () => {
         const alias = aliased;
         list.map(passed);
         read.property;
+        handlers["dispatched"]();
         export default defaulted;
       `),
       JavaScript,
     );
     const defaultDeclaration = extractUsedNamesWithLanguage(parse("export default function declaredDefault() {}\n"), JavaScript);
 
-    for (const name of ["importedAs", "exportedAs", "valueOfOtherKey", "renamed", "called", "method", "aliased", "passed", "property", "defaulted"]) {
+    for (const name of ["importedAs", "exportedAs", "valueOfOtherKey", "renamed", "called", "method", "aliased", "passed", "property", "dispatched", "defaulted"]) {
       expect(used).toContain(name);
     }
     for (const name of ["imported", "localName", "declared", "namedExport", "otherName", "shorthand", "same", "key", "bound", "alsoBound", "alias"]) {

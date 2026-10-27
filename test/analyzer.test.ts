@@ -386,6 +386,7 @@ describe("analyzer", () => {
     ["an ES export under another name", "export function template(s) { return s; }\nexport { template as render };\n"],
     ["an object export under another name", "function template(s) { return s; }\nmodule.exports = { template, render: template };\n"],
     ["a default export", "export default function template(s) { return s; }\nexport { template };\n"],
+    ["a string property", 'function template(s) { return s; }\nexports.template = template;\nexports.run = (s) => exports["template"](s);\n'],
   ])("treats a package's own use of the symbol through %s as a possible internal call", async (_label, lodashCode) => {
     mockOsv({ lodash: [templateAdvisory] });
 
@@ -421,6 +422,14 @@ describe("analyzer", () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp(source);
     writeProjectFile(cwd, "lib.js", 'module.exports = require("lodash");\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
+  });
+
+  it("reports UNKNOWN (unresolved-reference) when a component file it cannot parse names the symbol", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(cwd, path.join("src", "App.vue"), '<script setup>\nimport _ from "lodash";\nconst html = _.template("x")();\n</script>\n');
 
     expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
   });

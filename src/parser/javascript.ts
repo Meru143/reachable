@@ -18,7 +18,8 @@ const DYNAMIC_IMPORT_QUERY = `
 `;
 const CALL_QUERY = '(call_expression function: [(member_expression) (identifier)] @callee)';
 const EXPORT_QUERY = '(export_statement) @export';
-const NAME_QUERY = "[(identifier) (property_identifier) (shorthand_property_identifier)] @name";
+// String contents count too: obj["template"]() reaches the function without naming it as an identifier.
+const NAME_QUERY = "[(identifier) (property_identifier) (shorthand_property_identifier) (string_fragment)] @name";
 
 const parser = new Parser();
 parser.setLanguage(JavaScript);

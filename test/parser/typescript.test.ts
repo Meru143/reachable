@@ -70,4 +70,15 @@ describe("parser/typescript", () => {
     expect(parsedModule.imports.map((entry) => entry.source)).toEqual(["lodash"]);
     expect(parsedModule.calls).toEqual([{ callee: "_.template", line: 1502 }]);
   });
+
+  it("lists used names in TypeScript files too", () => {
+    const file = path.join(makeTempDir(), "lib.ts");
+    writeFileSync(file, 'export function template(s: string): string { return s; }\nexport const run = (name: string) => handlers["dispatch"](template(name));\n', "utf8");
+
+    const used = parseFile(file, { usedNames: true }).usedNames;
+
+    expect(used).toContain("template");
+    expect(used).toContain("dispatch");
+    expect(used).not.toContain("run");
+  });
 });
