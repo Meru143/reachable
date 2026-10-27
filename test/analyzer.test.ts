@@ -705,6 +705,21 @@ describe("analyzer", () => {
     expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
   });
 
+  it("searches the project once for every symbol, telling apart names that share a prefix", async () => {
+    mockOsv({ lodash: [textAdvisory("GHSA-29mw-wpgm-hmr9", "ReDoS via the `trim` and `trimEnd` functions.", "MODERATE")] });
+    const cwd = lodashApp(
+      'const _ = require("lodash");\n_.map([1], String);\n',
+      {},
+      "function trim(s) { return s; }\nfunction trimEnd(s) { return s; }\nfunction map(a, f) { return a.map(f); }\nmodule.exports = { trim, trimEnd, map };\n",
+    );
+    writeProjectFile(cwd, path.join("scripts", "tidy.js"), 'const { trimEnd } = require("lodash");\nconsole.log(trimEnd("x "));\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([
+      ["GHSA-29mw-wpgm-hmr9", "trimEnd", "UNKNOWN", "unresolved-reference"],
+      ["GHSA-29mw-wpgm-hmr9", "trim", "UNREACHABLE", undefined],
+    ]);
+  });
+
   it("reports UNKNOWN (unresolved-reference) when a template file names the symbol", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
@@ -764,11 +779,26 @@ describe("analyzer", () => {
 
     const scan = await analyze({ cwd });
 
-    expect(scan.unchecked).toEqual([]);
+    // The expired entry cannot hold advisories published since, so the package still counts as not checked.
+    expect(scan.unchecked).toEqual(["lodash@4.17.20"]);
     expect(verdicts(scan)).toEqual([
       ["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined],
       ["GHSA-29mw-wpgm-hmr9", "trim", "UNKNOWN", "lookup-failed"],
     ]);
+  });
+
+  it("stops asking OSV once advisory records fail with a network error", async () => {
+    const osv = vi.fn((url: string) =>
+      url.endsWith("/querybatch")
+        ? Promise.resolve(new Response(JSON.stringify({ results: [{ vulns: [{ id: "GHSA-35jh-r3h4-6jhm" }] }] })))
+        : Promise.reject(new TypeError("fetch failed")),
+    );
+    vi.stubGlobal("fetch", osv);
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n', { "node_modules/qs": { version: "6.7.0" } });
+
+    expect(await analyze({ cwd })).toEqual({ results: [], unchecked: ["lodash@4.17.20", "qs@6.7.0"] });
+    // lodash's batch query and its record's four attempts; nothing for qs.
+    expect(osv).toHaveBeenCalledTimes(5);
   });
 
   it("counts a package with no cached data on a dry run, without asking OSV", async () => {

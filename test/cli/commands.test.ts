@@ -332,7 +332,7 @@ describe("cli commands", () => {
   });
 
   it("exits 2 and says how many packages it could not check, unless a finding already fails the scan (f12-offline)", async () => {
-    const notice = "1 package could not be checked (the OSV lookup failed and nothing is cached), so these results are incomplete: lodash@4.17.20.";
+    const notice = "1 package could not be checked (the OSV lookup failed), so these results are incomplete: lodash@4.17.20.";
 
     const offline = await scan([], { results: [], unchecked: ["lodash@4.17.20"] });
     expect(process.exitCode).toBe(2);
@@ -341,6 +341,9 @@ describe("cli commands", () => {
 
     await scan([], { results: [finding("HIGH")], unchecked: ["lodash@4.17.20"] });
     expect(process.exitCode).toBe(1);
+
+    await scan(["--format", "sarif"], { results: [], unchecked: ["lodash@4.17.20"] });
+    expect(formatSarifMock).toHaveBeenCalledWith([], notice, true);
   });
 
   it("keeps a dry run's exit code, and says which packages had no cached data", async () => {

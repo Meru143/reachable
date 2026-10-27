@@ -119,7 +119,7 @@ describe("output formatters", () => {
   });
 
   it("says which packages could not be checked: a JSON field, a closing line in the table and markdown", () => {
-    const notice = "1 package could not be checked (the OSV lookup failed and nothing is cached), so these results are incomplete: lodash@4.17.20.";
+    const notice = "1 package could not be checked (the OSV lookup failed), so these results are incomplete: lodash@4.17.20.";
 
     expect(JSON.parse(formatJson(resultsFixture(), ["lodash@4.17.20"])).unchecked).toEqual(["lodash@4.17.20"]);
     expect(JSON.parse(formatJson(resultsFixture())).unchecked).toEqual([]);

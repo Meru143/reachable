@@ -32,12 +32,13 @@ function formatResults(
   results: ReachabilityResult[],
   unchecked: string[],
   notice: string,
+  incomplete: boolean,
 ): string {
   switch (format) {
     case "json":
       return formatJson(results, unchecked);
     case "sarif":
-      return formatSarif(results);
+      return formatSarif(results, notice, incomplete);
     case "markdown":
       return formatMarkdown(results, notice);
     case "table":
@@ -76,7 +77,7 @@ function incompleteNotice(unchecked: string[], dryRun: boolean): string {
   const names = unchecked.length > 10 ? `${unchecked.slice(0, 10).join(", ")} and ${unchecked.length - 10} more` : unchecked.join(", ");
   return dryRun
     ? `${count} had no cached advisory data (or only expired data), so this dry run did not check them: ${names}.`
-    : `${count} could not be checked (the OSV lookup failed and nothing is cached), so these results are incomplete: ${names}.`;
+    : `${count} could not be checked (the OSV lookup failed), so these results are incomplete: ${names}.`;
 }
 
 function writeGitHubSummary(results: ReachabilityResult[], notice: string): void {
@@ -131,18 +132,19 @@ export const scanCommand = new Command("scan")
     const failOn = options.failOn ?? config.failOn;
     const format = options.format ?? "table";
     const notice = incompleteNotice(unchecked, Boolean(options.dryRun));
+    // A dry run reads the cache only by design, so its gaps do not make the scan incomplete.
+    const incomplete = unchecked.length > 0 && !options.dryRun;
 
     writeGitHubSummary(filteredResults, notice);
 
     if (!options.quiet) {
-      process.stdout.write(`${formatResults(format, filteredResults, unchecked, notice)}\n`);
+      process.stdout.write(`${formatResults(format, filteredResults, unchecked, notice, incomplete)}\n`);
     }
 
     if (notice) {
       process.stderr.write(`${notice}\n`);
     }
 
-    // 1: a REACHABLE advisory at or above the threshold. 2: an incomplete scan, except on a dry run, which reads the
-    // cache only by design.
-    process.exitCode = failsThreshold(results, failOn) ? 1 : unchecked.length > 0 && !options.dryRun ? 2 : 0;
+    // 1: a REACHABLE advisory at or above the threshold. 2: an incomplete scan.
+    process.exitCode = failsThreshold(results, failOn) ? 1 : incomplete ? 2 : 0;
   });

@@ -27,8 +27,8 @@ export interface AnalyzeOptions {
 
 export interface AnalyzeResult {
   results: ReachabilityResult[];
-  /** name@version of each package whose advisories are missing: the OSV lookup failed and nothing was cached, or, on
-   * a dry run, nothing was cached. */
+  /** name@version of each package OSV could not be asked about: the lookup failed (any advisories shown for it come
+   * from an expired cache entry), or, on a dry run, it has no unexpired cache entry. */
   unchecked: string[];
 }
 
@@ -261,13 +261,19 @@ function cacheSettings(options: AnalyzeOptions): { cacheDir: string; ttlHours: n
 type Lookup = {
   advisories: Advisory[];
   degraded: Set<string>;
-  /** Some of the package's advisories are missing from `advisories`. */
+  /** OSV could not say which advisories affect the package now: some are missing, or all come from an expired cache
+   * entry, which cannot hold the ones published since. */
   unchecked: boolean;
 };
 
-// Shared by one run: every advisory record is fetched once, and once a batch lookup has failed (after its retries)
-// for a reason that is not about the one package, later packages do not wait through retries of their own.
+// Shared by one run: every advisory record is fetched once, and once a lookup has failed (after its retries) for a
+// reason that is not about the one request, later packages do not wait through retries of their own.
 type OsvSession = { fetched: Map<string, Promise<Advisory>>; outage?: unknown };
+
+// A 404 for a withdrawn id or a 400 for one query is about that request; anything else means OSV is unreachable.
+function isOutage(error: unknown): boolean {
+  return !(error instanceof OsvApiError) || error.statusCode === 429 || error.statusCode >= 500;
+}
 
 async function advisoriesForPackage(packageName: string, packageVersion: string, options: AnalyzeOptions, osv: OsvSession): Promise<Lookup> {
   const { cacheDir, ttlHours } = cacheSettings(options);
@@ -290,12 +296,13 @@ async function advisoriesForPackage(packageName: string, packageVersion: string,
     }
 
     const ids = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]).catch((error: unknown) => {
-      if (!(error instanceof OsvApiError) || error.statusCode === 429 || error.statusCode >= 500) {
+      if (isOutage(error)) {
         osv.outage = error;
       }
       throw error;
     });
     const { advisories, failed } = await fetchVulns(ids, osv.fetched);
+    osv.outage ??= failed.find(({ error }) => isOutage(error))?.error;
     if (failed.length === 0) {
       if (!options.noCache) {
         // A cache that cannot be written (read-only checkout) must not turn a successful lookup into a failed one.
@@ -343,7 +350,7 @@ async function advisoriesForPackage(packageName: string, packageVersion: string,
           },
           "Using stale advisory cache after OSV fetch failure",
         );
-        return { advisories: staleAdvisories, degraded: new Set(staleAdvisories.map((advisory) => advisory.id)), unchecked: false };
+        return { advisories: staleAdvisories, degraded: new Set(staleAdvisories.map((advisory) => advisory.id)), unchecked: true };
       }
     }
 
@@ -555,13 +562,10 @@ function exportedLocalNames(text: string, symbol: string): string[] {
 
 type Verdict = Omit<ReachabilityResult, "advisory">;
 
-// Files whose text can name a function: every source file, and components and templates, which are not parsed.
-const PROJECT_FILES = /\.([cm]?[jt]sx?|vue|svelte|astro|ejs|pug|jade|hbs|handlebars|mustache|njk|liquid|eta|html?)$/;
-
-// The app's own files are the only code in the graph: a verdict about dependency code is never UNREACHABLE.
+// The app's own files are the only code in the graph: a verdict about dependency code is never UNREACHABLE. An
+// UNREACHABLE here still goes through the project and dependency searches in analyze().
 function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<string>) {
   const packageCode = new Map<string, PackageCode | null>();
-  let projectSources: string[] | undefined;
 
   const unknown = (reason: UnknownReason): Verdict => ({ status: "UNKNOWN", callPath: null, reason });
 
@@ -583,21 +587,6 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
 
     const localNames = [symbol, ...exportedLocalNames(code.exportText, symbol)];
     return !localNames.some((localName) => code.usedNames.has(localName));
-  };
-
-  // Any file of the project, reachable from an entry point or not, the graph's files included (an extensionless bin,
-  // dist/ files an entry imports): routes loaded with fs.readdirSync and require(variable) never join the graph,
-  // aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from it, and components and
-  // templates are not parsed. Raw text, so a file the parser cannot read still counts.
-  const mentionedInProject = (symbol: string): boolean => {
-    projectSources ??= [
-      ...new Set([
-        ...[...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
-        ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file)),
-      ]),
-    ].map((file) => readFileSync(file, "utf8"));
-    const pattern = new RegExp(String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`);
-    return projectSources.some((source) => pattern.test(source));
   };
 
   return (installed: InstalledPackage, symbol: string | null, confident: boolean, degraded: boolean): Verdict => {
@@ -633,12 +622,36 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
       return unknown("symbol-unconfirmed");
     }
 
-    if (mentionedInProject(symbol)) {
-      return unknown("unresolved-reference");
-    }
-
     return { status: "UNREACHABLE", callPath: null };
   };
+}
+
+// Files whose text can name a function: every source file, and components and templates, which are not parsed.
+const PROJECT_FILES = /\.([cm]?[jt]sx?|vue|svelte|astro|ejs|pug|jade|hbs|handlebars|mustache|njk|liquid|eta|html?)$/;
+
+// Which of `symbols` a project file mentions, as raw text, reachable from an entry point or not: every file
+// collectSourceFiles finds (test files left out, as in the graph), components and templates, and the graph's own files
+// (an extensionless bin, dist/ files an entry imports). Routes loaded with fs.readdirSync and require(file) never join
+// the graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from it, and a file
+// the parser cannot read still counts. One pass for all symbols, stopping once each is found.
+function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[]): Set<string> {
+  const files = new Set([
+    ...[...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
+    ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file)),
+  ]);
+  const name = new RegExp(String.raw`(?<![\w$])(${symbols.map(escapeRegExp).join("|")})(?![\w$])`, "g");
+  const found = new Set<string>();
+  for (const file of files) {
+    for (const match of readFileSync(file, "utf8").matchAll(name)) {
+      found.add(match[1]);
+    }
+
+    if (found.size === symbols.length) {
+      break;
+    }
+  }
+
+  return found;
 }
 
 // ponytail: one pass over the installed packages' JavaScript, capped at 256 MB read; past the cap the would-be
@@ -763,14 +776,24 @@ export async function analyze(options: AnalyzeOptions): Promise<AnalyzeResult> {
     }
   }
 
-  // Last, and once for all of them: whether another package's code loads a package that would be UNREACHABLE.
-  const candidates = [...new Set(results.filter((result) => result.status === "UNREACHABLE").map((result) => result.advisory.package))];
+  // Last, each search once for all of them: a mention of the function anywhere in the project, then another
+  // package's code naming the package.
+  const symbolOf = (result: ReachabilityResult): string => result.advisory.exportedSymbol ?? "";
+  const unreachable = results.filter((result) => result.status === "UNREACHABLE");
+  const mentioned = unreachable.length > 0 ? mentionedInProject(cwd, graph, [...new Set(unreachable.map(symbolOf))]) : new Set<string>();
+  const candidates = [...new Set(unreachable.filter((result) => !mentioned.has(symbolOf(result))).map((result) => result.advisory.package))];
   const named = candidates.length > 0 ? namedInDependencyCode(cwd, candidates) : new Set<string>();
-  const checked = results.map((result): ReachabilityResult =>
-    result.status === "UNREACHABLE" && (named === null || named.has(result.advisory.package))
-      ? { ...result, status: "UNKNOWN", reason: "transitive" }
-      : result,
-  );
+  const checked = results.map((result): ReachabilityResult => {
+    if (result.status !== "UNREACHABLE") {
+      return result;
+    }
+
+    if (mentioned.has(symbolOf(result))) {
+      return { ...result, status: "UNKNOWN", reason: "unresolved-reference" };
+    }
+
+    return named === null || named.has(result.advisory.package) ? { ...result, status: "UNKNOWN", reason: "transitive" } : result;
+  });
 
   return { results: sortResults(checked), unchecked };
 }

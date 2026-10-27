@@ -23,7 +23,8 @@ function locationFromPath(callPath: string[] | null): { uri: string; line: numbe
   };
 }
 
-export function formatSarif(results: ReachabilityResult[]): string {
+/** `notice`: the packages that could not be checked; `incomplete`: that makes the scan incomplete (not a dry run). */
+export function formatSarif(results: ReachabilityResult[], notice = "", incomplete = false): string {
   const sarifResults = results
     .filter((result) => result.status === "REACHABLE")
     .map((result) => {
@@ -61,6 +62,13 @@ export function formatSarif(results: ReachabilityResult[]): string {
               version: packageJson.version,
             },
           },
+          // For consumers that read only the SARIF: an incomplete scan did not succeed, and a dry run's gaps are a warning.
+          invocations: [
+            {
+              executionSuccessful: !incomplete,
+              ...(notice ? { toolExecutionNotifications: [{ level: incomplete ? "error" : "warning", message: { text: notice } }] } : {}),
+            },
+          ],
           results: sarifResults,
         },
       ],
