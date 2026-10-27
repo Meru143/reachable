@@ -1,3 +1,10 @@
+## [1.0.11](https://github.com/Meru143/reachable/compare/v1.0.10...v1.0.11) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** drop the unused undici dependency ([#5](https://github.com/Meru143/reachable/issues/5)) ([05c177f](https://github.com/Meru143/reachable/commit/05c177f5e9b63e530d0f71907bdc0a348cdda933))
+
 ## [1.0.10](https://github.com/Meru143/reachable/compare/v1.0.9...v1.0.10) (2026-10-27)
 
 
