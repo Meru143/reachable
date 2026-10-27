@@ -679,13 +679,13 @@ export function namedInDependencyCode(cwd: string, names: string[], maxBytes = M
           return false;
         }
       } else if (entry.isFile() && /\.[cm]?jsx?$/.test(entry.name)) {
-        const code = readFileSync(fullPath, "latin1");
-        bytes += code.length;
+        // Counted before reading, so one huge bundle cannot be read past the cap.
+        bytes += statSync(fullPath).size;
         if (bytes > maxBytes) {
           return false;
         }
 
-        for (const match of code.matchAll(specifier)) {
+        for (const match of readFileSync(fullPath, "latin1").matchAll(specifier)) {
           if (match[2] !== owner) {
             found.add(match[2]);
           }
