@@ -1,0 +1,13 @@
+# Security updates only (no version-update PRs). Production bumps are fix(deps)
+# commits, so merging one releases a patch; dev-only bumps are chore(deps-dev).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      prefix-development: chore
+      include: scope
