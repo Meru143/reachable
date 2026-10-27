@@ -82,32 +82,36 @@ describe("parser/javascript", () => {
     ]);
   });
 
-  it("lists the names a module uses beyond declaring them or binding them to an export", () => {
+  it("lists the names a module uses beyond declaring them or exporting them under the same name", () => {
     const used = extractUsedNamesWithLanguage(
       parse(`
         import { imported } from "./x";
+        import { importedAs as localName } from "./y";
         function declared() {}
-        const assigned = function () {};
-        export { declared as exportedAlias };
-        export default assigned;
-        module.exports = { shorthand, key: value };
+        export function namedExport() {}
+        export { declared };
+        export { exportedAs as otherName };
+        module.exports = { shorthand, same: same, key: valueOfOtherKey };
         exports.bound = bound;
-        lib.same = same;
-        lib.other = renamed;
+        lib.alsoBound = alsoBound;
+        lib.otherName = renamed;
         called();
         obj.method();
         const alias = aliased;
         list.map(passed);
         read.property;
+        export default defaulted;
       `),
       JavaScript,
     );
+    const defaultDeclaration = extractUsedNamesWithLanguage(parse("export default function declaredDefault() {}\n"), JavaScript);
 
-    for (const name of ["renamed", "called", "method", "aliased", "passed", "property"]) {
+    for (const name of ["importedAs", "exportedAs", "valueOfOtherKey", "renamed", "called", "method", "aliased", "passed", "property", "defaulted"]) {
       expect(used).toContain(name);
     }
-    for (const name of ["imported", "declared", "assigned", "exportedAlias", "shorthand", "key", "value", "bound", "same", "alias"]) {
+    for (const name of ["imported", "localName", "declared", "namedExport", "otherName", "shorthand", "same", "key", "bound", "alsoBound", "alias"]) {
       expect(used).not.toContain(name);
     }
+    expect(defaultDeclaration).toContain("declaredDefault");
   });
 });

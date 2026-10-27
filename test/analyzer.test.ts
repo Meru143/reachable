@@ -382,6 +382,10 @@ describe("analyzer", () => {
     ["an alias", "function template(s) { return s; }\nconst alias = template;\nexports.template = template;\nexports.render = (s) => alias(s);\n"],
     ["a callback", "function template(s) { return s; }\nexports.template = template;\nexports.renderAll = (items) => items.map(template);\n"],
     ["a dispatch table", "function template(s) { return s; }\nconst handlers = { template };\nexports.template = template;\nexports.run = (name, s) => handlers[name](s);\n"],
+    ["a second export name", "function template(s) { return s; }\nexports.template = template;\nexports.render = template;\n"],
+    ["an ES export under another name", "export function template(s) { return s; }\nexport { template as render };\n"],
+    ["an object export under another name", "function template(s) { return s; }\nmodule.exports = { template, render: template };\n"],
+    ["a default export", "export default function template(s) { return s; }\nexport { template };\n"],
   ])("treats a package's own use of the symbol through %s as a possible internal call", async (_label, lodashCode) => {
     mockOsv({ lodash: [templateAdvisory] });
 

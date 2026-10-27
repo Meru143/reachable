@@ -362,7 +362,7 @@ type PackageCode = { exportText: string; usedNames: Set<string> };
 const MAX_PACKAGE_FILES = 2000;
 
 // The installed copy the app loads (node_modules of the project or a workspace), preferring the given version.
-// Calls behind a dynamic require are not seen.
+// Uses behind a dynamic require are not seen.
 function readPackageCode(cwd: string, packageName: string, version: string): PackageCode | null {
   const packageDirs = [cwd, ...workspaceDirectories(cwd)]
     .map((directory) => path.join(directory, "node_modules", packageName))
@@ -436,7 +436,8 @@ function readPackageCode(cwd: string, packageName: string, version: string): Pac
   };
 }
 
-// CommonJS assignments, compiled ESM, ESM declarations and lists, and namespace members (lodash.template = template).
+// Named exports: CommonJS assignments, compiled ESM, ESM declarations and lists, and namespace members
+// (lodash.template = template). A default export is not one: the app can call it by any name.
 function exportsSymbol(text: string, symbol: string): boolean {
   const quoted = escapeRegExp(symbol);
   const name = String.raw`(?<![\w$])${quoted}(?![\w$])`;
@@ -444,7 +445,7 @@ function exportsSymbol(text: string, symbol: string): boolean {
     String.raw`\bexports\.${name}`,
     String.raw`\bexports\[\s*["']${quoted}["']\s*\]`,
     String.raw`defineProperty\(\s*(?:module\.)?exports\s*,\s*["']${quoted}["']`,
-    String.raw`\bexport\s+(?:declare\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+${name}`,
+    String.raw`\bexport\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+${name}`,
     String.raw`\bexport\s*\{[^}]*${name}`,
     String.raw`\bmodule\.exports\s*=\s*\{[^}]*${name}`,
     String.raw`[\w$]\.${name}\s*=(?!=)`,
@@ -452,7 +453,7 @@ function exportsSymbol(text: string, symbol: string): boolean {
 }
 
 // Local names an export is bound to (exports.template = compile, export { compile as template }, e.template=t in
-// minified code): the package's internal calls use those names.
+// minified code): the package's own code uses those names.
 function exportedLocalNames(text: string, symbol: string): string[] {
   const name = String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`;
   return [

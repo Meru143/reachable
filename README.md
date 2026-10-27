@@ -121,7 +121,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 ## Limitations
 
 - Dependencies' own code is not analyzed. An advisory that only dependency code could reach is `UNKNOWN`, never `UNREACHABLE`. The vulnerable package itself is read only to confirm that its entry files export the function and that none of the files they reach through static imports use it. Uses behind a dynamic `require` are not seen, and a package of more than 2,000 files is not read, so its functions stay `UNKNOWN`.
-- Calls are matched by name: any `x.template(...)` in a file that imports lodash counts as a call to `template`. This errs towards `REACHABLE`.
+- Calls are matched by name, per file: any `x.template(...)` in a file that imports lodash counts as a call to `template`, even inside a function nothing calls. This errs towards `REACHABLE`.
 - Only code reachable from the entry points counts. Pass `--entry` for scripts, workers and anything `package.json` does not name.
 - In TypeScript files only `import` statements are read; a package loaded there with `require` looks not imported (`UNKNOWN`).
 - If an OSV lookup fails and nothing is cached for the package, its advisories are left out of the results; a warning is logged to stderr.

@@ -41,20 +41,37 @@ function sameNode(left: Parser.SyntaxNode | null, right: Parser.SyntaxNode): boo
   return Boolean(left && left.startIndex === right.startIndex && left.endIndex === right.endIndex);
 }
 
-// function x() {}, const x = ..., import { x }, export { x as y }, export default x, { x: ... } keys, a.x = ...,
-// a.x = x, exports.y = x, module.exports = { x }, export default { x }. Anything else (a call, an alias, an
-// argument, a property read) is a use.
+// export default function x() {}, module.exports = function x() {}: the app calls a default export by any name.
+function isDefaultExport(declaration: Parser.SyntaxNode): boolean {
+  const holder = declaration.parent;
+  if (holder?.type === "export_statement") {
+    return /^export\s+default\b/.test(holder.text);
+  }
+
+  return (
+    holder?.type === "assignment_expression" &&
+    sameNode(holder.childForFieldName("right"), declaration) &&
+    /^(module\.exports|exports\.default)$/.test(holder.childForFieldName("left")?.text ?? "")
+  );
+}
+
+// Declaring a name or exporting it under the same name: function x() {}, const x = ..., import { x },
+// export { x }, { x: ... } keys, a.x = ..., a.x = x, module.exports = { x } or { x: x }, export default { x }.
+// Anything else is a use: a call, an alias, an argument, a property read, and handing x out under another name
+// (export { x as y }, import { x as y }, a.y = x, { y: x }, export default x, module.exports = x), since code that
+// calls it by that name never mentions x.
 function declaresOrExports(node: Parser.SyntaxNode): boolean {
   const parent = node.parent;
   if (!parent) {
     return false;
   }
 
-  if (sameNode(parent.childForFieldName("name"), node) || sameNode(parent.childForFieldName("alias"), node) || parent.type === "export_statement") {
-    return true;
+  const alias = parent.childForFieldName("alias");
+  if (sameNode(parent.childForFieldName("name"), node)) {
+    return !alias ? !isDefaultExport(parent) : alias.text === node.text;
   }
 
-  if (parent.type === "pair" && sameNode(parent.childForFieldName("key"), node)) {
+  if (sameNode(alias, node) || (parent.type === "pair" && sameNode(parent.childForFieldName("key"), node))) {
     return true;
   }
 
@@ -64,14 +81,14 @@ function declaresOrExports(node: Parser.SyntaxNode): boolean {
   }
 
   if (parent.type === "assignment_expression" && sameNode(parent.childForFieldName("right"), node)) {
-    const left = parent.childForFieldName("left");
-    return (
-      left?.type === "member_expression" &&
-      (left.childForFieldName("property")?.text === node.text || /^(module\.exports|exports)\b/.test(left.text))
-    );
+    return parent.childForFieldName("left")?.childForFieldName("property")?.text === node.text;
   }
 
-  const object = parent.type === "object" ? parent : parent.type === "pair" && sameNode(parent.childForFieldName("value"), node) ? parent.parent : null;
+  if (parent.type === "pair" && parent.childForFieldName("key")?.text !== node.text) {
+    return false;
+  }
+
+  const object = parent.type === "object" ? parent : parent.type === "pair" ? parent.parent : null;
   const holder = object?.type === "object" ? object.parent : null;
   return (
     holder?.type === "export_statement" ||
