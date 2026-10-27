@@ -378,6 +378,29 @@ describe("analyzer", () => {
     expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
   });
 
+  it.each([
+    ["an alias", "function template(s) { return s; }\nconst alias = template;\nexports.template = template;\nexports.render = (s) => alias(s);\n"],
+    ["a callback", "function template(s) { return s; }\nexports.template = template;\nexports.renderAll = (items) => items.map(template);\n"],
+    ["a dispatch table", "function template(s) { return s; }\nconst handlers = { template };\nexports.template = template;\nexports.run = (name, s) => handlers[name](s);\n"],
+  ])("treats a package's own use of the symbol through %s as a possible internal call", async (_label, lodashCode) => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, lodashCode) });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
+
+  it.each([
+    ["module.exports = { ... }", "function template(s) { return s; }\nfunction render(s) { return s; }\nmodule.exports = { template, render };\n"],
+    ["ES exports", "export function template(s) { return s; }\nexport function render(s) { return s; }\n"],
+  ])("still confirms an exported symbol the package never uses itself (%s)", async (_label, lodashCode) => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, lodashCode) });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
   it("still reports REACHABLE for a symbol it could not confirm when the app calls it", async () => {
     mockOsv({ lodash: [textAdvisory("GHSA-named-as-a-call", "Prototype Pollution via file `index.js`, function `setKey()`.")] });
 

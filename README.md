@@ -106,7 +106,7 @@ reachable graph src/index.ts
 For each installed package (every version in the lockfile, dev dependencies excluded), `reachable` asks OSV which advisories affect it, fetches each advisory's full record, and keeps the entries for that package only. It takes the vulnerable functions from the advisory's wording ("via the template function", "the `toNumber`, `trim` and `trimEnd` functions", "`_.template`", "`foo()`"), one row per function. It never takes the package's own name as a function.
 
 - `REACHABLE`: a file that imports the package calls the function by name (`_.template(...)`, `template(...)`), and that file is on an import path from an entry point. The call path is the evidence.
-- `UNREACHABLE`: only when all of these hold: your code imports the package, this is the copy it loads (not one nested under another package), and no other installed package depends on it; the advisory names the function plainly (not only as a call such as `setKey()`); the installed package exports the function from its entry files and does not call it itself; no file reachable from an entry point mentions the name; and no call path exists.
+- `UNREACHABLE`: only when all of these hold: your code imports the package, this is the copy it loads (not one nested under another package), and no other installed package depends on it; the advisory names the function plainly (not only as a call such as `setKey()`); the installed package exports the function from its entry files and never uses it itself (no call, alias or callback); no file reachable from an entry point mentions the name; and no call path exists.
 - `UNKNOWN`: everything else. The JSON output carries a `reason`, and the table and markdown show it:
 
 | Reason | Meaning |
@@ -115,12 +115,12 @@ For each installed package (every version in the lockfile, dev dependencies excl
 | `not-imported` | Your code never imports the package. It is installed for other dependencies, whose code is not analyzed. |
 | `symbol-unknown` | The advisory does not name a vulnerable function. |
 | `transitive` | Other installed packages depend on the package and may reach the function. Either your code imports the package without reaching the function, or this copy is nested under another package (`node_modules/a/node_modules/b`) and only that package loads it. |
-| `symbol-unconfirmed` | The named function is not confirmed as an entry point of the package: it is named only as a call, the package's entry files do not export it, or the package calls it itself. |
+| `symbol-unconfirmed` | The named function is not confirmed as an entry point of the package: it is named only as a call, the package's entry files do not export it, or the package uses it itself (a call, an alias, a callback), so its other functions may reach it. |
 | `unresolved-reference` | The name appears in reachable code outside a call the graph resolves, such as a renamed import, a callback (`.map(_.template)`) or a re-export. |
 
 ## Limitations
 
-- Dependencies' own code is not analyzed. An advisory that only dependency code could reach is `UNKNOWN`, never `UNREACHABLE`. The vulnerable package itself is read only to confirm that its entry files export the function and that none of the files they reach through static imports call it. Calls behind a dynamic `require` are not seen, and a package of more than 2,000 files is not read, so its functions stay `UNKNOWN`.
+- Dependencies' own code is not analyzed. An advisory that only dependency code could reach is `UNKNOWN`, never `UNREACHABLE`. The vulnerable package itself is read only to confirm that its entry files export the function and that none of the files they reach through static imports use it. Uses behind a dynamic `require` are not seen, and a package of more than 2,000 files is not read, so its functions stay `UNKNOWN`.
 - Calls are matched by name: any `x.template(...)` in a file that imports lodash counts as a call to `template`. This errs towards `REACHABLE`.
 - Only code reachable from the entry points counts. Pass `--entry` for scripts, workers and anything `package.json` does not name.
 - In TypeScript files only `import` statements are read; a package loaded there with `require` looks not imported (`UNKNOWN`).

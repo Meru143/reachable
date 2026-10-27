@@ -354,9 +354,9 @@ function stringLeaves(value: unknown): string[] {
   return value && typeof value === "object" ? Object.values(value).flatMap(stringLeaves) : [];
 }
 
-// exportText: the entry files and the files they import directly. calls: every file the entry files reach through
-// static relative imports and re-exports.
-type PackageCode = { exportText: string; calls: string[] };
+// exportText: the entry files and the files they import directly. usedNames: names used (called, aliased, passed,
+// read) in any file the entry files reach through static relative imports and re-exports.
+type PackageCode = { exportText: string; usedNames: Set<string> };
 
 // ponytail: a cap instead of streaming; a bigger package stays unconfirmed (UNKNOWN), never UNREACHABLE.
 const MAX_PACKAGE_FILES = 2000;
@@ -390,7 +390,7 @@ function readPackageCode(cwd: string, packageName: string, version: string): Pac
     }
 
     try {
-      parsed.set(file, parseFile(file));
+      parsed.set(file, parseFile(file, { usedNames: true }));
     } catch {
       // Not JavaScript or TypeScript (JSON, native addons).
     }
@@ -432,7 +432,7 @@ function readPackageCode(cwd: string, packageName: string, version: string): Pac
 
   return {
     exportText: [...exportFiles].map((file) => readFileSync(file, "utf8")).join("\n"),
-    calls: [...parsed.values()].flatMap((module) => module.calls.map((call) => call.callee)),
+    usedNames: new Set([...parsed.values()].flatMap((module) => [...(module.usedNames ?? [])])),
   };
 }
 
@@ -471,7 +471,8 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
 
   const unknown = (reason: UnknownReason): Verdict => ({ status: "UNKNOWN", callPath: null, reason });
 
-  // The package exports the symbol and none of its own code calls it, so only the app's calls can reach it.
+  // The package exports the symbol and its own code never uses it (no call, alias, callback or read), so only the
+  // app's calls can reach it.
   const isEntryPointOfPackage = ({ name, version }: InstalledPackage, symbol: string): boolean => {
     const key = `${name}@${version}`;
     if (!packageCode.has(key)) {
@@ -484,7 +485,7 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
     }
 
     const localNames = [symbol, ...exportedLocalNames(code.exportText, symbol)];
-    return !code.calls.some((callee) => localNames.some((localName) => matchesSymbol(callee, localName)));
+    return !localNames.some((localName) => code.usedNames.has(localName));
   };
 
   // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph.

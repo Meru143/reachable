@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import Parser from "tree-sitter";
 import JavaScript from "tree-sitter-javascript";
 
-import type { CallRef, ExportRef, ImportRef, ParsedModule } from "./index.js";
+import type { CallRef, ExportRef, ImportRef, ParsedModule, ParseOptions } from "./index.js";
 
 // The JS grammar stays on the 0.23.x line so it remains compatible with tree-sitter 0.21.x
 // and the pinned TypeScript grammar, which is the safest working combination in this runtime.
@@ -18,6 +18,7 @@ const DYNAMIC_IMPORT_QUERY = `
 `;
 const CALL_QUERY = '(call_expression function: [(member_expression) (identifier)] @callee)';
 const EXPORT_QUERY = '(export_statement) @export';
+const NAME_QUERY = "[(identifier) (property_identifier) (shorthand_property_identifier)] @name";
 
 const parser = new Parser();
 parser.setLanguage(JavaScript);
@@ -34,6 +35,56 @@ function lineOf(node: Parser.SyntaxNode): number {
 // so files of 32 KB or more were skipped and their imports and calls went missing from the graph.
 export function parseSource(parser: Parser, sourceText: string): Parser.Tree {
   return parser.parse(sourceText, undefined, { bufferSize: sourceText.length + 1 });
+}
+
+function sameNode(left: Parser.SyntaxNode | null, right: Parser.SyntaxNode): boolean {
+  return Boolean(left && left.startIndex === right.startIndex && left.endIndex === right.endIndex);
+}
+
+// function x() {}, const x = ..., import { x }, export { x as y }, export default x, { x: ... } keys, a.x = ...,
+// a.x = x, exports.y = x, module.exports = { x }, export default { x }. Anything else (a call, an alias, an
+// argument, a property read) is a use.
+function declaresOrExports(node: Parser.SyntaxNode): boolean {
+  const parent = node.parent;
+  if (!parent) {
+    return false;
+  }
+
+  if (sameNode(parent.childForFieldName("name"), node) || sameNode(parent.childForFieldName("alias"), node) || parent.type === "export_statement") {
+    return true;
+  }
+
+  if (parent.type === "pair" && sameNode(parent.childForFieldName("key"), node)) {
+    return true;
+  }
+
+  const assignment = parent.parent;
+  if (parent.type === "member_expression" && assignment?.type === "assignment_expression") {
+    return sameNode(parent.childForFieldName("property"), node) && sameNode(assignment.childForFieldName("left"), parent);
+  }
+
+  if (parent.type === "assignment_expression" && sameNode(parent.childForFieldName("right"), node)) {
+    const left = parent.childForFieldName("left");
+    return (
+      left?.type === "member_expression" &&
+      (left.childForFieldName("property")?.text === node.text || /^(module\.exports|exports)\b/.test(left.text))
+    );
+  }
+
+  const object = parent.type === "object" ? parent : parent.type === "pair" && sameNode(parent.childForFieldName("value"), node) ? parent.parent : null;
+  const holder = object?.type === "object" ? object.parent : null;
+  return (
+    holder?.type === "export_statement" ||
+    (holder?.type === "assignment_expression" && /^(module\.)?exports$/.test(holder.childForFieldName("left")?.text ?? ""))
+  );
+}
+
+export function extractUsedNamesWithLanguage(tree: Parser.Tree, language: unknown): Set<string> {
+  return new Set(
+    captureNodes(language, tree, NAME_QUERY)
+      .filter((capture) => !declaresOrExports(capture.node))
+      .map((capture) => capture.node.text),
+  );
 }
 
 function captureNodes(language: unknown, tree: Parser.Tree, querySource: string): Parser.QueryCapture[] {
@@ -217,7 +268,7 @@ export function extractExportsWithLanguage(tree: Parser.Tree, language: unknown)
   return uniqueBy(exports, (entry) => `${entry.name}:${entry.line}:${entry.source ?? ""}:${entry.isWildcard ?? false}`);
 }
 
-export function parseJavaScriptFile(filePath: string): ParsedModule {
+export function parseJavaScriptFile(filePath: string, options: ParseOptions = {}): ParsedModule {
   const tree = parseSource(parser, readFileSync(filePath, "utf8"));
 
   return {
@@ -228,5 +279,6 @@ export function parseJavaScriptFile(filePath: string): ParsedModule {
     ),
     exports: extractExports(tree),
     calls: extractCallSites(tree),
+    ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, JavaScript) } : {}),
   };
 }

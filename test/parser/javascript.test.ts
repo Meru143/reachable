@@ -8,6 +8,7 @@ import {
   extractESMImports,
   extractExports,
   extractRequireCalls,
+  extractUsedNamesWithLanguage,
 } from "../../src/parser/javascript.js";
 
 const parser = new Parser();
@@ -79,5 +80,34 @@ describe("parser/javascript", () => {
     expect(extractExports(tree)).toEqual([
       { name: "*", line: 2, source: "./leaf", isWildcard: true },
     ]);
+  });
+
+  it("lists the names a module uses beyond declaring them or binding them to an export", () => {
+    const used = extractUsedNamesWithLanguage(
+      parse(`
+        import { imported } from "./x";
+        function declared() {}
+        const assigned = function () {};
+        export { declared as exportedAlias };
+        export default assigned;
+        module.exports = { shorthand, key: value };
+        exports.bound = bound;
+        lib.same = same;
+        lib.other = renamed;
+        called();
+        obj.method();
+        const alias = aliased;
+        list.map(passed);
+        read.property;
+      `),
+      JavaScript,
+    );
+
+    for (const name of ["renamed", "called", "method", "aliased", "passed", "property"]) {
+      expect(used).toContain(name);
+    }
+    for (const name of ["imported", "declared", "assigned", "exportedAlias", "shorthand", "key", "value", "bound", "same", "alias"]) {
+      expect(used).not.toContain(name);
+    }
   });
 });

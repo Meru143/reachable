@@ -9,9 +9,10 @@ import {
   extractDynamicImportsWithLanguage,
   extractESMImportsWithLanguage,
   extractExportsWithLanguage,
+  extractUsedNamesWithLanguage,
   parseSource,
 } from "./javascript.js";
-import type { ImportRef, ParsedModule } from "./index.js";
+import type { ImportRef, ParsedModule, ParseOptions } from "./index.js";
 
 const IMPORT_TYPE_QUERY = '(import_statement) @import';
 
@@ -55,7 +56,7 @@ export function extractTypeImports(tree: Parser.Tree, isTsx = false): ImportRef[
   );
 }
 
-export function parseTypeScriptFile(filePath: string, isTsx = false): ParsedModule {
+export function parseTypeScriptFile(filePath: string, isTsx = false, options: ParseOptions = {}): ParsedModule {
   const parser = isTsx ? tsxParser : typeScriptParser;
   const language = isTsx ? TypeScriptGrammars.tsx : TypeScriptGrammars.typescript;
   const tree = parseSource(parser, readFileSync(filePath, "utf8"));
@@ -73,5 +74,6 @@ export function parseTypeScriptFile(filePath: string, isTsx = false): ParsedModu
     ),
     exports: extractExportsWithLanguage(tree, language),
     calls: extractCallSitesWithLanguage(tree, language),
+    ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, language) } : {}),
   };
 }
