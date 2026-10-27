@@ -279,7 +279,15 @@ async function advisoriesForPackage(
     const { advisories, failed } = await fetchVulns(ids, fetched);
     if (failed.length === 0) {
       if (!options.noCache) {
-        setCache(cacheKey, advisories, cacheDir);
+        // A cache that cannot be written (read-only checkout) must not turn a successful lookup into a failed one.
+        try {
+          setCache(cacheKey, advisories, cacheDir);
+        } catch (cacheError) {
+          logger.warn(
+            { error: cacheError instanceof Error ? cacheError.message : String(cacheError), cacheDir },
+            "Could not write the advisory cache; continuing without it",
+          );
+        }
       }
 
       return {
@@ -623,7 +631,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
         }
 
         results.push({
-          advisory: vulnSymbol,
+          advisory: { ...vulnSymbol, installedVersion: installedPackage.version },
           ...verdict(installedPackage, vulnSymbol.exportedSymbol, confident, degraded.has(advisory.id)),
         });
       }

@@ -1,6 +1,6 @@
 // SARIF v2.1.0 formatter.
 import packageJson from "../../package.json";
-import type { ReachabilityResult } from "../vuln/types.js";
+import { packageLabel, type ReachabilityResult } from "../vuln/types.js";
 
 function levelForSeverity(severity: string): "error" | "warning" {
   return severity === "CRITICAL" || severity === "HIGH" ? "error" : "warning";
@@ -32,7 +32,7 @@ export function formatSarif(results: ReachabilityResult[]): string {
         ruleId: result.advisory.ghsaId,
         level: levelForSeverity(result.advisory.severity),
         message: {
-          text: `${result.advisory.package} ${result.advisory.exportedSymbol ?? "unknown"} is reachable`,
+          text: `${packageLabel(result.advisory)} ${result.advisory.exportedSymbol ?? "unknown"} is reachable`,
         },
         locations: [
           {

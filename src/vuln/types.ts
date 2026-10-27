@@ -55,6 +55,13 @@ export interface VulnSymbol {
   severity: "CRITICAL" | "HIGH" | "MODERATE" | "LOW";
   exportedSymbol: string | null;
   affectedVersionRange: string;
+  /** The installed version the result is for; a package can be installed in several versions. */
+  installedVersion?: string;
+}
+
+/** lodash@4.17.20, or the package name alone when the version is not known. */
+export function packageLabel(advisory: VulnSymbol): string {
+  return advisory.installedVersion ? `${advisory.package}@${advisory.installedVersion}` : advisory.package;
 }
 
 /** Why a result is UNKNOWN; the README's Limitations section explains each one. */

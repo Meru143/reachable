@@ -27,6 +27,15 @@ describe("output/sarif", () => {
     expect(sarif.version).toBe("2.1.0");
   });
 
+  it("names the installed version in the message", () => {
+    const result = reachableResult("GHSA-1111-2222-3333", "HIGH");
+    const sarif = JSON.parse(formatSarif([{ ...result, advisory: { ...result.advisory, installedVersion: "4.17.20" } }])) as {
+      runs: Array<{ results: Array<{ message: { text: string } }> }>;
+    };
+
+    expect(sarif.runs[0].results[0]?.message.text).toBe("lodash@4.17.20 trim is reachable");
+  });
+
   it("maps each reachable result to a SARIF result entry", () => {
     const sarif = JSON.parse(
       formatSarif([

@@ -95,6 +95,7 @@ describe("output formatters", () => {
         severity: "HIGH",
         exportedSymbol: "template",
         affectedVersionRange: "introduced:0 -> fixed:4.17.21",
+        installedVersion: "4.17.20",
       },
       status: "UNKNOWN",
       callPath: null,
@@ -103,9 +104,10 @@ describe("output formatters", () => {
 
     expect(JSON.parse(formatJson([unknown])).results[0].reason).toBe("transitive");
     expect(formatMarkdown([unknown])).toContain(
-      "- **lodash** [GHSA-35jh-r3h4-6jhm](https://github.com/advisories/GHSA-35jh-r3h4-6jhm) via `template` could not be confirmed as reachable or unreachable (transitive).",
+      "- **lodash@4.17.20** [GHSA-35jh-r3h4-6jhm](https://github.com/advisories/GHSA-35jh-r3h4-6jhm) via `template` could not be confirmed as reachable or unreachable (transitive).",
     );
     expect(formatTable([unknown])).toContain("Reason: transitive");
+    expect(formatTable([unknown])).toContain("lodash@4.17.20");
   });
 
   it("formats empty markdown and table output with an explicit no-results message", () => {

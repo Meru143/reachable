@@ -60,31 +60,31 @@ Example terminal output, for an app whose `index.js` calls `_.template` with `lo
 
 ```text
 REACHABLE
-┌──────────┬─────────┬─────────────────────┬───────────┬───────────────────┐
-│ Severity │ Package │ GHSA ID             │ Status    │ Vulnerable Symbol │
-├──────────┼─────────┼─────────────────────┼───────────┼───────────────────┤
-│ HIGH     │ lodash  │ GHSA-35jh-r3h4-6jhm │ REACHABLE │ template          │
-├──────────┴─────────┴─────────────────────┴───────────┴───────────────────┤
-│ Path: index.js::module -> index.js::call:_.template:2                    │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────┬────────────────┬─────────────────────┬───────────┬───────────────────┐
+│ Severity │ Package        │ GHSA ID             │ Status    │ Vulnerable Symbol │
+├──────────┼────────────────┼─────────────────────┼───────────┼───────────────────┤
+│ HIGH     │ lodash@4.17.20 │ GHSA-35jh-r3h4-6jhm │ REACHABLE │ template          │
+├──────────┴────────────────┴─────────────────────┴───────────┴───────────────────┤
+│ Path: index.js::module -> index.js::call:_.template:2                           │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
 UNKNOWN
-┌──────────┬─────────┬─────────────────────┬─────────┬───────────────────┐
-│ Severity │ Package │ GHSA ID             │ Status  │ Vulnerable Symbol │
-├──────────┼─────────┼─────────────────────┼─────────┼───────────────────┤
-│ MODERATE │ lodash  │ GHSA-29mw-wpgm-hmr9 │ UNKNOWN │ toNumber          │
-├──────────┴─────────┴─────────────────────┴─────────┴───────────────────┤
-│ Reason: symbol-unconfirmed                                             │
-└────────────────────────────────────────────────────────────────────────┘
+┌──────────┬────────────────┬─────────────────────┬─────────┬───────────────────┐
+│ Severity │ Package        │ GHSA ID             │ Status  │ Vulnerable Symbol │
+├──────────┼────────────────┼─────────────────────┼─────────┼───────────────────┤
+│ MODERATE │ lodash@4.17.20 │ GHSA-29mw-wpgm-hmr9 │ UNKNOWN │ toNumber          │
+├──────────┴────────────────┴─────────────────────┴─────────┴───────────────────┤
+│ Reason: symbol-unconfirmed                                                    │
+└───────────────────────────────────────────────────────────────────────────────┘
 
 UNREACHABLE
-┌──────────┬─────────┬─────────────────────┬─────────────┬───────────────────┐
-│ Severity │ Package │ GHSA ID             │ Status      │ Vulnerable Symbol │
-├──────────┼─────────┼─────────────────────┼─────────────┼───────────────────┤
-│ MODERATE │ lodash  │ GHSA-29mw-wpgm-hmr9 │ UNREACHABLE │ trim              │
-├──────────┼─────────┼─────────────────────┼─────────────┼───────────────────┤
-│ MODERATE │ lodash  │ GHSA-f23m-r3pf-42rh │ UNREACHABLE │ unset             │
-└──────────┴─────────┴─────────────────────┴─────────────┴───────────────────┘
+┌──────────┬────────────────┬─────────────────────┬─────────────┬───────────────────┐
+│ Severity │ Package        │ GHSA ID             │ Status      │ Vulnerable Symbol │
+├──────────┼────────────────┼─────────────────────┼─────────────┼───────────────────┤
+│ MODERATE │ lodash@4.17.20 │ GHSA-29mw-wpgm-hmr9 │ UNREACHABLE │ trim              │
+├──────────┼────────────────┼─────────────────────┼─────────────┼───────────────────┤
+│ MODERATE │ lodash@4.17.20 │ GHSA-f23m-r3pf-42rh │ UNREACHABLE │ unset             │
+└──────────┴────────────────┴─────────────────────┴─────────────┴───────────────────┘
 ```
 
 `toNumber` is UNKNOWN rather than UNREACHABLE because lodash calls `toNumber` itself (from `_.clamp`, `_.debounce` and others), so code that never names it can still reach it.
@@ -134,6 +134,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 - Advisories carry their package, severity and functions. Up to 1.0.11, `reachable` read OSV's batch endpoint, which returns only advisory ids, so every result came out as package `unknown`, score 0, severity `LOW`, symbol `unknown` and status `UNKNOWN`. It now fetches each advisory's record. Caches written by earlier versions are ignored; you can delete `.reachable-cache`.
 - Only the installed package's entry in an advisory is reported (a lodash advisory no longer adds rows for `lodash-es` or `lodash.template`).
 - `UNREACHABLE` follows the rules above, and `UNKNOWN` results carry a `reason`.
+- Results name the installed version (`lodash@4.17.20` in the table, markdown and SARIF; `advisory.installedVersion` in JSON).
 - Every function an advisory names gets its own row, and the package's own name is never used as one.
 - Source files of 32 KB or more are analyzed; they used to be skipped.
 - Every installed version of a package is checked, not only one per name. A copy nested under another package is `UNKNOWN` (`transitive`), because only that package loads it.

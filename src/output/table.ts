@@ -2,7 +2,7 @@
 import Table from "cli-table3";
 import { Chalk } from "chalk";
 
-import type { ReachabilityResult } from "../vuln/types.js";
+import { packageLabel, type ReachabilityResult } from "../vuln/types.js";
 
 const chalk = new Chalk({ level: process.env.NO_COLOR ? 0 : 1 });
 
@@ -45,7 +45,7 @@ export function formatTable(results: ReachabilityResult[]): string {
     for (const row of rows) {
       table.push([
         row.advisory.severity,
-        row.advisory.package,
+        packageLabel(row.advisory),
         row.advisory.ghsaId,
         row.status,
         row.advisory.exportedSymbol ?? "unknown",

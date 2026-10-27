@@ -256,11 +256,22 @@ describe("analyzer", () => {
           severity: "HIGH",
           exportedSymbol: "template",
           affectedVersionRange: "introduced:0 -> fixed:4.17.21",
+          installedVersion: "4.17.20",
         },
         status: "REACHABLE",
         callPath: ["index.js::module", "index.js::call:_.template:2"],
       },
     ]);
+  });
+
+  it("keeps the fetched advisories when the cache cannot be written", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    const blocker = writeProjectFile(cwd, "not-a-directory", "a file where the cache directory would go\n");
+
+    const results = await analyze({ cwd, cacheDir: path.join(blocker, "cache") });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
   });
 
   it("caches the full records and reuses them for a dry run", async () => {
