@@ -86,6 +86,30 @@ describe("output formatters", () => {
     expect(table).toContain("Path: src/index.ts::module -> src/index.ts::call:lodash.trim:12");
   });
 
+  it("shows why a result is unknown in every format that lists unknown results", () => {
+    const unknown: ReachabilityResult = {
+      advisory: {
+        package: "lodash",
+        ghsaId: "GHSA-35jh-r3h4-6jhm",
+        cvssScore: 7,
+        severity: "HIGH",
+        exportedSymbol: "template",
+        affectedVersionRange: "introduced:0 -> fixed:4.17.21",
+        installedVersion: "4.17.20",
+      },
+      status: "UNKNOWN",
+      callPath: null,
+      reason: "transitive",
+    };
+
+    expect(JSON.parse(formatJson([unknown])).results[0].reason).toBe("transitive");
+    expect(formatMarkdown([unknown])).toContain(
+      "- **lodash@4.17.20** [GHSA-35jh-r3h4-6jhm](https://github.com/advisories/GHSA-35jh-r3h4-6jhm) via `template` could not be confirmed as reachable or unreachable (transitive).",
+    );
+    expect(formatTable([unknown])).toContain("Reason: transitive");
+    expect(formatTable([unknown])).toContain("lodash@4.17.20");
+  });
+
   it("formats empty markdown and table output with an explicit no-results message", () => {
     const markdown = formatMarkdown([]);
     const table = formatTable([]);

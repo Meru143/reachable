@@ -28,21 +28,25 @@ export interface ParsedModule {
   imports: ImportRef[];
   exports: ExportRef[];
   calls: CallRef[];
+  /** With `usedNames: true`: names the module uses beyond declaring them or binding them to an export. */
+  usedNames?: Set<string>;
 }
 
-export function parseFile(filePath: string): ParsedModule {
+export type ParseOptions = { usedNames?: boolean };
+
+export function parseFile(filePath: string, options: ParseOptions = {}): ParsedModule {
   const extension = path.extname(filePath).toLowerCase();
 
   if ([".js", ".mjs", ".cjs", ".jsx"].includes(extension)) {
-    return parseJavaScriptFile(filePath);
+    return parseJavaScriptFile(filePath, options);
   }
 
   if ([".ts", ".mts"].includes(extension)) {
-    return parseTypeScriptFile(filePath, false);
+    return parseTypeScriptFile(filePath, false, options);
   }
 
   if (extension === ".tsx") {
-    return parseTypeScriptFile(filePath, true);
+    return parseTypeScriptFile(filePath, true, options);
   }
 
   throw new Error(`Unsupported file extension: ${extension}`);

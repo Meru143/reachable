@@ -3,13 +3,16 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { buildGraph } from "./graph/builder.js";
-import { findPathTo } from "./graph/traversal.js";
+import { findPathTo, findReachableNodes } from "./graph/traversal.js";
+import type { CallGraph } from "./graph/types.js";
+import { parseFile } from "./parser/index.js";
+import { resolveImport } from "./parser/resolver.js";
 import { logger } from "./utils/logger.js";
 import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCache } from "./vuln/cache.js";
-import { queryBatch } from "./vuln/osv.js";
+import { fetchVulns, queryBatch } from "./vuln/osv.js";
 import { extractVulnSymbols } from "./vuln/symbols.js";
-import type { Advisory, ReachabilityResult, VulnSymbol } from "./vuln/types.js";
-import { parsePackageLock } from "./utils/packagelock.js";
+import type { Advisory, InstalledPackage, ReachabilityResult, UnknownReason } from "./vuln/types.js";
+import { addInstalledPackage, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
 import { ReachableError } from "./utils/errors.js";
 
 export interface AnalyzeOptions {
@@ -99,8 +102,9 @@ function hasPackageLock(directory: string): boolean {
   return existsSync(path.join(directory, "package-lock.json")) || existsSync(path.join(directory, "node_modules", ".package-lock.json"));
 }
 
-function collectInstalledPackages(cwd: string) {
-  const installedPackages = new Map<string, ReturnType<typeof parsePackageLock>[number]>();
+function collectInstalledPackages(cwd: string): { installedPackages: InstalledPackage[]; usedByDependencies: Set<string> } {
+  const installedPackages = new Map<string, InstalledPackage>();
+  const usedByDependencies = new Set<string>();
   let foundLockfile = false;
 
   for (const packageDir of [cwd, ...workspaceDirectories(cwd)]) {
@@ -111,7 +115,11 @@ function collectInstalledPackages(cwd: string) {
     foundLockfile = true;
 
     for (const installedPackage of parsePackageLock(packageDir)) {
-      installedPackages.set(`${installedPackage.name}@${installedPackage.version}`, installedPackage);
+      addInstalledPackage(installedPackages, installedPackage);
+    }
+
+    for (const name of packagesUsedByDependencies(packageDir)) {
+      usedByDependencies.add(name);
     }
   }
 
@@ -119,7 +127,7 @@ function collectInstalledPackages(cwd: string) {
     throw new ReachableError("E001", "Run npm install first, or specify --cwd");
   }
 
-  return [...installedPackages.values()];
+  return { installedPackages: [...installedPackages.values()], usedByDependencies };
 }
 
 function entryCandidatesForPackage(packageDir: string): string[] {
@@ -205,7 +213,7 @@ export function detectEntryPoints(cwd: string, explicitEntries?: string[]): stri
   return [...new Set(entryPoints)];
 }
 
-export function collectSourceFiles(cwd: string): string[] {
+export function collectSourceFiles(cwd: string, pattern = /\.[cm]?[jt]sx?$/): string[] {
   const sourceFiles: string[] = [];
   const ignoredDirectories = new Set(["node_modules", "dist", "coverage", ".git", ".reachable-cache"]);
 
@@ -223,7 +231,7 @@ export function collectSourceFiles(cwd: string): string[] {
         continue;
       }
 
-      if (/\.[cm]?[jt]sx?$/.test(entry)) {
+      if (pattern.test(entry)) {
         sourceFiles.push(fullPath);
       }
     }
@@ -244,7 +252,8 @@ async function advisoriesForPackage(
   packageName: string,
   packageVersion: string,
   options: AnalyzeOptions,
-): Promise<{ advisories: Advisory[]; degradedToUnknown: boolean }> {
+  fetched: Map<string, Promise<Advisory>>,
+): Promise<{ advisories: Advisory[]; degraded: Set<string> }> {
   const { cacheDir, ttlHours } = cacheSettings(options);
   const cacheKey = createCacheKey(packageName, packageVersion);
 
@@ -253,7 +262,7 @@ async function advisoriesForPackage(
     if (cached) {
       return {
         advisories: cached,
-        degradedToUnknown: false,
+        degraded: new Set(),
       };
     }
   }
@@ -261,19 +270,48 @@ async function advisoriesForPackage(
   if (options.dryRun) {
     return {
       advisories: [],
-      degradedToUnknown: false,
+      degraded: new Set(),
     };
   }
 
   try {
-    const advisories = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
-    if (!options.noCache) {
-      setCache(cacheKey, advisories, cacheDir);
+    const ids = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
+    const { advisories, failed } = await fetchVulns(ids, fetched);
+    if (failed.length === 0) {
+      if (!options.noCache) {
+        // A cache that cannot be written (read-only checkout) must not turn a successful lookup into a failed one.
+        try {
+          setCache(cacheKey, advisories, cacheDir);
+        } catch (cacheError) {
+          logger.warn(
+            { error: cacheError instanceof Error ? cacheError.message : String(cacheError), cacheDir },
+            "Could not write the advisory cache; continuing without it",
+          );
+        }
+      }
+
+      return {
+        advisories,
+        degraded: new Set(),
+      };
     }
 
+    // Keep the records that arrived. A failed one comes from the stale cache when it has it, and is left out
+    // otherwise. A partial result is not cached, so the next run retries.
+    const stale = options.noCache ? [] : getCachedRegardlessOfTtl(cacheKey, cacheDir) ?? [];
+    const staleRecords = stale.filter((advisory) => failed.some((entry) => entry.id === advisory.id));
+    logger.warn(
+      {
+        package: packageName,
+        version: packageVersion,
+        failed: failed.map(({ id, error }) => `${id}: ${error instanceof Error ? error.message : String(error)}`),
+        fromStaleCache: staleRecords.map((advisory) => advisory.id),
+      },
+      "Some OSV advisory records could not be fetched",
+    );
     return {
-      advisories,
-      degradedToUnknown: false,
+      advisories: [...advisories, ...staleRecords],
+      degraded: new Set(staleRecords.map((advisory) => advisory.id)),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -290,7 +328,7 @@ async function advisoriesForPackage(
         );
         return {
           advisories: staleAdvisories,
-          degradedToUnknown: true,
+          degraded: new Set(staleAdvisories.map((advisory) => advisory.id)),
         };
       }
     }
@@ -305,13 +343,286 @@ async function advisoriesForPackage(
     );
     return {
       advisories: [],
-      degradedToUnknown: true,
+      degraded: new Set(),
     };
   }
 }
 
 function matchesSymbol(nodeName: string, exportedSymbol: string): boolean {
   return nodeName === exportedSymbol || nodeName.endsWith(`.${exportedSymbol}`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// A call matching the symbol, in a module that imports the package, on a path from an entry point.
+function findCallPath(graph: CallGraph, packageNodeId: string, symbol: string): string[] | null {
+  for (const edge of graph.edges.filter((entry) => entry.to === packageNodeId)) {
+    const siblingNodes = graph.edges
+      .filter((candidate) => candidate.from === edge.from)
+      .map((candidate) => graph.nodes.get(candidate.to))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+
+    const matchingNode = siblingNodes.find((node) => matchesSymbol(node.name, symbol));
+    const callPath = matchingNode ? findPathTo(graph, matchingNode.id) : null;
+    if (callPath) {
+      return callPath;
+    }
+  }
+
+  return null;
+}
+
+function stringLeaves(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  return value && typeof value === "object" ? Object.values(value).flatMap(stringLeaves) : [];
+}
+
+// Targets of a package.json "exports" or "imports" entry, wildcards included ("./*": "./lib/*.js").
+function mapTargets(map: Record<string, unknown> | null, key: string): string[] {
+  if (!map) {
+    return [];
+  }
+
+  if (key in map) {
+    return stringLeaves(map[key]);
+  }
+
+  for (const [pattern, value] of Object.entries(map)) {
+    const [prefix, suffix, ...rest] = pattern.split("*");
+    if (suffix !== undefined && rest.length === 0 && key.length >= prefix.length + suffix.length && key.startsWith(prefix) && key.endsWith(suffix)) {
+      const match = key.slice(prefix.length, key.length - suffix.length);
+      return stringLeaves(value).map((target) => target.split("*").join(match));
+    }
+  }
+
+  return [];
+}
+
+// exportText: the entry files and the files they import directly. usedNames: names used (called, aliased, passed,
+// read) in any file the entry files reach through static relative imports and re-exports.
+type PackageCode = { exportText: string; usedNames: Set<string> };
+
+// ponytail: a cap instead of streaming; a bigger package stays unconfirmed (UNKNOWN), never UNREACHABLE.
+const MAX_PACKAGE_FILES = 2000;
+
+// The installed copy the app loads (node_modules of the project or a workspace), preferring the given version.
+// Uses behind a dynamic require are not seen.
+function readPackageCode(cwd: string, packageName: string, version: string, importedSubpaths: string[]): PackageCode | null {
+  const packageDirs = [cwd, ...workspaceDirectories(cwd)]
+    .map((directory) => path.join(directory, "node_modules", packageName))
+    .filter((directory) => existsSync(path.join(directory, "package.json")));
+  const packageDir = packageDirs.find((directory) => packageJsonAt(directory)?.version === version) ?? packageDirs[0];
+  if (!packageDir) {
+    return null;
+  }
+
+  const manifest = packageJsonAt(packageDir) ?? {};
+  const exportsField = manifest.exports;
+  const subpathMap =
+    exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith("."))
+      ? (exportsField as Record<string, unknown>)
+      : null;
+  const importsMap = manifest.imports && typeof manifest.imports === "object" ? (manifest.imports as Record<string, unknown>) : null;
+  const resolve = (target: string, fromFile: string): string | null => {
+    const resolved = resolveImport(target, fromFile, packageDir);
+    return resolved && path.isAbsolute(resolved) ? resolved : null;
+  };
+  const manifestPath = path.join(packageDir, "package.json");
+  const parsed = new Map<string, ReturnType<typeof parseFile>>();
+  const parse = (file: string | null): void => {
+    if (!file || parsed.has(file)) {
+      return;
+    }
+
+    try {
+      parsed.set(file, parseFile(file, { usedNames: true }));
+    } catch {
+      // Not JavaScript or TypeScript (JSON, native addons).
+    }
+  };
+
+  const resolveEntry = (target: string): string | null => resolve(target.startsWith(".") ? target : `./${target}`, manifestPath);
+
+  // Every target the package exports, subpaths included (pkg/unsafe loads code the root entry may never require).
+  for (const entry of [manifest.main ?? "index", manifest.module, ...stringLeaves(exportsField)]) {
+    if (typeof entry === "string") {
+      parse(resolveEntry(entry));
+    }
+  }
+
+  // Subpaths the app imports (lodash/template); one that cannot be followed leaves the symbol unconfirmed.
+  for (const subpath of importedSubpaths) {
+    const files = (subpathMap ? mapTargets(subpathMap, subpath) : [subpath]).map(resolveEntry).filter((file): file is string => file !== null);
+    if (files.length === 0) {
+      return null;
+    }
+
+    files.forEach(parse);
+  }
+
+  const entryFiles = new Set(parsed.keys());
+  const exportFiles = new Set(entryFiles);
+  const queue = [...entryFiles];
+  while (queue.length > 0) {
+    const file = queue.shift() ?? "";
+    const module = parsed.get(file);
+    const sources = [...(module?.imports ?? []).map((entry) => entry.source), ...(module?.exports ?? []).flatMap((entry) => entry.source ?? [])];
+
+    for (const source of sources) {
+      // The package importing itself by name is not followed, so the symbol stays unconfirmed.
+      if (source === packageName || source.startsWith(`${packageName}/`)) {
+        return null;
+      }
+
+      // "#internal/x" resolves through package.json "imports"; one that cannot be followed leaves it unconfirmed.
+      const targets = source.startsWith("#")
+        ? mapTargets(importsMap, source).map(resolveEntry)
+        : source.startsWith(".")
+          ? [resolve(source, file)]
+          : [];
+      if (source.startsWith("#") && !targets.some((target) => target !== null)) {
+        return null;
+      }
+
+      for (const target of targets) {
+        if (!target || parsed.has(target)) {
+          continue;
+        }
+
+        if (parsed.size >= MAX_PACKAGE_FILES) {
+          return null;
+        }
+
+        parse(target);
+        if (parsed.has(target)) {
+          queue.push(target);
+          if (entryFiles.has(file)) {
+            exportFiles.add(target);
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    exportText: [...exportFiles].map((file) => readFileSync(file, "utf8")).join("\n"),
+    usedNames: new Set([...parsed.values()].flatMap((module) => [...(module.usedNames ?? [])])),
+  };
+}
+
+// Named exports: CommonJS assignments, compiled ESM, ESM declarations and lists, and namespace members
+// (lodash.template = template). A default export is not one: the app can call it by any name.
+function exportsSymbol(text: string, symbol: string): boolean {
+  const quoted = escapeRegExp(symbol);
+  const name = String.raw`(?<![\w$])${quoted}(?![\w$])`;
+  return [
+    String.raw`\bexports\.${name}`,
+    String.raw`\bexports\[\s*["']${quoted}["']\s*\]`,
+    String.raw`defineProperty\(\s*(?:module\.)?exports\s*,\s*["']${quoted}["']`,
+    String.raw`\bexport\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+${name}`,
+    String.raw`\bexport\s*\{[^}]*${name}`,
+    String.raw`\bmodule\.exports\s*=\s*\{[^}]*${name}`,
+    String.raw`[\w$]\.${name}\s*=(?!=)`,
+  ].some((pattern) => new RegExp(pattern).test(text));
+}
+
+// Local names an export is bound to (exports.template = compile, export { compile as template }, e.template=t in
+// minified code): the package's own code uses those names.
+function exportedLocalNames(text: string, symbol: string): string[] {
+  const name = String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`;
+  return [
+    String.raw`\.${name}\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n]`,
+    String.raw`${name}\s*:\s*([A-Za-z_$][\w$]*)\s*[,}\n]`,
+    String.raw`([A-Za-z_$][\w$]*)\s+as\s+${name}`,
+  ].flatMap((pattern) => [...text.matchAll(new RegExp(pattern, "g"))].map((match) => match[1]));
+}
+
+type Verdict = Omit<ReachabilityResult, "advisory">;
+
+// The app's own files are the only code in the graph: a verdict about dependency code is never UNREACHABLE.
+function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<string>) {
+  const packageCode = new Map<string, PackageCode | null>();
+  let reachableSources: string[] | undefined;
+
+  const unknown = (reason: UnknownReason): Verdict => ({ status: "UNKNOWN", callPath: null, reason });
+
+  // The package exports the symbol and its own code never uses it (no call, alias, callback or read), so only the
+  // app's calls can reach it.
+  const isEntryPointOfPackage = ({ name, version }: InstalledPackage, symbol: string): boolean => {
+    const key = `${name}@${version}`;
+    if (!packageCode.has(key)) {
+      const subpaths = graph.edges
+        .filter((edge) => edge.to === `pkg:${name}::module` && edge.importedFrom.startsWith(`${name}/`))
+        .map((edge) => `.${edge.importedFrom.slice(name.length)}`);
+      packageCode.set(key, readPackageCode(cwd, name, version, [...new Set(subpaths)]));
+    }
+
+    const code = packageCode.get(key);
+    if (!code || !exportsSymbol(code.exportText, symbol)) {
+      return false;
+    }
+
+    const localNames = [symbol, ...exportedLocalNames(code.exportText, symbol)];
+    return !localNames.some((localName) => code.usedNames.has(localName));
+  };
+
+  // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph, and
+  // .vue, .svelte and .astro files are not parsed at all, so any mention there counts too.
+  const mentionedInReachableCode = (symbol: string): boolean => {
+    reachableSources ??= [
+      ...[...findReachableNodes(graph, Number.POSITIVE_INFINITY)]
+        .map((id) => graph.nodes.get(id))
+        .filter((node): node is NonNullable<typeof node> => node?.name === "module" && !node.id.startsWith("pkg:"))
+        .map((node) => path.resolve(cwd, node.file)),
+      ...collectSourceFiles(cwd, /\.(vue|svelte|astro)$/),
+    ].map((file) => readFileSync(file, "utf8"));
+    const pattern = new RegExp(String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`);
+    return reachableSources.some((source) => pattern.test(source));
+  };
+
+  return (installed: InstalledPackage, symbol: string | null, confident: boolean, degraded: boolean): Verdict => {
+    if (degraded) {
+      return unknown("lookup-failed");
+    }
+
+    // The app's imports load the hoisted copy; a copy nested under another package is loaded only by that package.
+    if (installed.nested) {
+      return unknown("transitive");
+    }
+
+    const packageNodeId = `pkg:${installed.name}::module`;
+    if (!graph.nodes.has(packageNodeId)) {
+      return unknown("not-imported");
+    }
+
+    if (symbol === null) {
+      return unknown("symbol-unknown");
+    }
+
+    const callPath = findCallPath(graph, packageNodeId, symbol);
+    if (callPath) {
+      return { status: "REACHABLE", callPath };
+    }
+
+    if (usedByDependencies.has(installed.name)) {
+      return unknown("transitive");
+    }
+
+    if (!confident || !isEntryPointOfPackage(installed, symbol)) {
+      return unknown("symbol-unconfirmed");
+    }
+
+    if (mentionedInReachableCode(symbol)) {
+      return unknown("unresolved-reference");
+    }
+
+    return { status: "UNREACHABLE", callPath: null };
+  };
 }
 
 function sortResults(results: ReachabilityResult[]): ReachabilityResult[] {
@@ -341,54 +652,25 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
     clearCache(cacheDir);
   }
 
-  const installedPackages = collectInstalledPackages(cwd);
+  const { installedPackages, usedByDependencies } = collectInstalledPackages(cwd);
   const entryPoints = detectEntryPoints(cwd, options.entry);
-  const sourceFiles = collectSourceFiles(cwd);
-  const graph = buildGraph(sourceFiles, entryPoints, cwd);
+  const graph = buildGraph(collectSourceFiles(cwd), entryPoints, cwd);
+  const verdict = verdictFor(cwd, graph, usedByDependencies);
+  const fetched = new Map<string, Promise<Advisory>>();
   const results: ReachabilityResult[] = [];
 
   for (const installedPackage of installedPackages) {
-    const { advisories, degradedToUnknown } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options);
+    const { advisories, degraded } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options, fetched);
 
     for (const advisory of advisories) {
-      for (const vulnSymbol of extractVulnSymbols(advisory)) {
+      for (const { confident, ...vulnSymbol } of extractVulnSymbols(advisory, installedPackage.name)) {
         if (ignoreSet.has(vulnSymbol.ghsaId)) {
           continue;
         }
 
-        if (degradedToUnknown || vulnSymbol.exportedSymbol === null) {
-          results.push({
-            advisory: vulnSymbol,
-            status: "UNKNOWN",
-            callPath: null,
-          });
-          continue;
-        }
-
-        const packageNodeId = `pkg:${vulnSymbol.package}::module`;
-        let callPath: string[] | null = null;
-
-        for (const edge of graph.edges.filter((entry) => entry.to === packageNodeId)) {
-          const siblingNodes = graph.edges
-            .filter((candidate) => candidate.from === edge.from)
-            .map((candidate) => graph.nodes.get(candidate.to))
-            .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
-
-          const matchingNode = siblingNodes.find((node) => matchesSymbol(node.name, vulnSymbol.exportedSymbol!));
-          if (!matchingNode) {
-            continue;
-          }
-
-          callPath = findPathTo(graph, matchingNode.id);
-          if (callPath) {
-            break;
-          }
-        }
-
         results.push({
-          advisory: vulnSymbol as VulnSymbol,
-          status: callPath ? "REACHABLE" : "UNREACHABLE",
-          callPath,
+          advisory: { ...vulnSymbol, installedVersion: installedPackage.version },
+          ...verdict(installedPackage, vulnSymbol.exportedSymbol, confident, degraded.has(advisory.id)),
         });
       }
     }

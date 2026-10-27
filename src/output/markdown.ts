@@ -1,5 +1,5 @@
 // GitHub PR comment formatter.
-import type { ReachabilityResult } from "../vuln/types.js";
+import { packageLabel, type ReachabilityResult } from "../vuln/types.js";
 
 function linkGhsa(id: string): string {
   return `[${id}](https://github.com/advisories/${id})`;
@@ -29,7 +29,7 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
   if (reachable.length > 0) {
     lines.push("## Reachable");
     for (const result of reachable) {
-      lines.push(`- **${result.advisory.package}** ${linkGhsa(result.advisory.ghsaId)} via \`${result.advisory.exportedSymbol ?? "unknown"}\``);
+      lines.push(`- **${packageLabel(result.advisory)}** ${linkGhsa(result.advisory.ghsaId)} via \`${result.advisory.exportedSymbol ?? "unknown"}\``);
       if (result.callPath?.length) {
         lines.push(`  Path: \`${result.callPath.join(" -> ")}\``);
       }
@@ -40,7 +40,9 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
   if (unknown.length > 0) {
     lines.push("## Unknown");
     for (const result of unknown) {
-      lines.push(`- **${result.advisory.package}** ${linkGhsa(result.advisory.ghsaId)} could not be confirmed as reachable or unreachable.`);
+      const symbol = result.advisory.exportedSymbol ? ` via \`${result.advisory.exportedSymbol}\`` : "";
+      const reason = result.reason ? ` (${result.reason})` : "";
+      lines.push(`- **${packageLabel(result.advisory)}** ${linkGhsa(result.advisory.ghsaId)}${symbol} could not be confirmed as reachable or unreachable${reason}.`);
     }
     lines.push("");
   }
@@ -50,7 +52,7 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
     lines.push("<summary>Unreachable advisories</summary>");
     lines.push("");
     for (const result of unreachable) {
-      lines.push(`- **${result.advisory.package}** ${linkGhsa(result.advisory.ghsaId)} via \`${result.advisory.exportedSymbol ?? "unknown"}\``);
+      lines.push(`- **${packageLabel(result.advisory)}** ${linkGhsa(result.advisory.ghsaId)} via \`${result.advisory.exportedSymbol ?? "unknown"}\``);
     }
     lines.push("");
     lines.push("</details>");

@@ -60,4 +60,25 @@ describe("parser/typescript", () => {
     expect(parsedModule.file).toBe(componentFile);
     expect(parsedModule.exports).toEqual([{ name: "App", line: 2 }]);
   });
+
+  it("parses files of 32 KB and more", () => {
+    const file = path.join(makeTempDir(), "big.ts");
+    writeFileSync(file, `import _ from "lodash";\n${"const value: number = 1;\n".repeat(1500)}_.template("x");\n`, "utf8");
+
+    const parsedModule = parseFile(file);
+
+    expect(parsedModule.imports.map((entry) => entry.source)).toEqual(["lodash"]);
+    expect(parsedModule.calls).toEqual([{ callee: "_.template", line: 1502 }]);
+  });
+
+  it("lists used names in TypeScript files too", () => {
+    const file = path.join(makeTempDir(), "lib.ts");
+    writeFileSync(file, 'export function template(s: string): string { return s; }\nexport const run = (name: string) => handlers["dispatch"](template(name));\n', "utf8");
+
+    const used = parseFile(file, { usedNames: true }).usedNames;
+
+    expect(used).toContain("template");
+    expect(used).toContain("dispatch");
+    expect(used).not.toContain("run");
+  });
 });

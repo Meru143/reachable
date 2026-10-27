@@ -10,8 +10,10 @@ type CacheRecord = {
   advisories: Advisory[];
 };
 
+// "v2" entries hold full OSV records. Up to 1.0.11 the cache held the batch endpoint's id-only records under
+// unversioned keys; those files are never read again, fresh or as the stale fallback.
 export function createCacheKey(packageName: string, packageVersion: string): string {
-  return createHash("sha256").update(`${packageName}@${packageVersion}`).digest("hex");
+  return createHash("sha256").update(`v2:${packageName}@${packageVersion}`).digest("hex");
 }
 
 function readCacheRecord(key: string, cacheDir: string): CacheRecord | null {

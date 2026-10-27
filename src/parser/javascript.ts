@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import Parser from "tree-sitter";
 import JavaScript from "tree-sitter-javascript";
 
-import type { CallRef, ExportRef, ImportRef, ParsedModule } from "./index.js";
+import type { CallRef, ExportRef, ImportRef, ParsedModule, ParseOptions } from "./index.js";
 
 // The JS grammar stays on the 0.23.x line so it remains compatible with tree-sitter 0.21.x
 // and the pinned TypeScript grammar, which is the safest working combination in this runtime.
@@ -18,6 +18,8 @@ const DYNAMIC_IMPORT_QUERY = `
 `;
 const CALL_QUERY = '(call_expression function: [(member_expression) (identifier)] @callee)';
 const EXPORT_QUERY = '(export_statement) @export';
+// String contents count too: obj["template"]() reaches the function without naming it as an identifier.
+const NAME_QUERY = "[(identifier) (property_identifier) (shorthand_property_identifier) (string_fragment)] @name";
 
 const parser = new Parser();
 parser.setLanguage(JavaScript);
@@ -28,6 +30,79 @@ function stripQuotes(text: string): string {
 
 function lineOf(node: Parser.SyntaxNode): number {
   return node.startPosition.row + 1;
+}
+
+// tree-sitter 0.21 throws "Invalid argument" when a string is not shorter than bufferSize (default 32768),
+// so files of 32 KB or more were skipped and their imports and calls went missing from the graph.
+export function parseSource(parser: Parser, sourceText: string): Parser.Tree {
+  return parser.parse(sourceText, undefined, { bufferSize: sourceText.length + 1 });
+}
+
+function sameNode(left: Parser.SyntaxNode | null, right: Parser.SyntaxNode): boolean {
+  return Boolean(left && left.startIndex === right.startIndex && left.endIndex === right.endIndex);
+}
+
+// export default function x() {}, module.exports = function x() {}: the app calls a default export by any name.
+function isDefaultExport(declaration: Parser.SyntaxNode): boolean {
+  const holder = declaration.parent;
+  if (holder?.type === "export_statement") {
+    return /^export\s+default\b/.test(holder.text);
+  }
+
+  return (
+    holder?.type === "assignment_expression" &&
+    sameNode(holder.childForFieldName("right"), declaration) &&
+    /^(module\.exports|exports\.default)$/.test(holder.childForFieldName("left")?.text ?? "")
+  );
+}
+
+// Declaring a name or exporting it under the same name: function x() {}, const x = ..., import { x },
+// export { x }, { x: ... } keys, a.x = ..., a.x = x, module.exports = { x } or { x: x }, export default { x }.
+// Anything else is a use: a call, an alias, an argument, a property read, and handing x out under another name
+// (export { x as y }, import { x as y }, a.y = x, { y: x }, export default x, module.exports = x), since code that
+// calls it by that name never mentions x.
+function declaresOrExports(node: Parser.SyntaxNode): boolean {
+  const parent = node.parent;
+  if (!parent) {
+    return false;
+  }
+
+  const alias = parent.childForFieldName("alias");
+  if (sameNode(parent.childForFieldName("name"), node)) {
+    return !alias ? !isDefaultExport(parent) : alias.text === node.text;
+  }
+
+  if (sameNode(alias, node) || (parent.type === "pair" && sameNode(parent.childForFieldName("key"), node))) {
+    return true;
+  }
+
+  const assignment = parent.parent;
+  if (parent.type === "member_expression" && assignment?.type === "assignment_expression") {
+    return sameNode(parent.childForFieldName("property"), node) && sameNode(assignment.childForFieldName("left"), parent);
+  }
+
+  if (parent.type === "assignment_expression" && sameNode(parent.childForFieldName("right"), node)) {
+    return parent.childForFieldName("left")?.childForFieldName("property")?.text === node.text;
+  }
+
+  if (parent.type === "pair" && parent.childForFieldName("key")?.text !== node.text) {
+    return false;
+  }
+
+  const object = parent.type === "object" ? parent : parent.type === "pair" ? parent.parent : null;
+  const holder = object?.type === "object" ? object.parent : null;
+  return (
+    holder?.type === "export_statement" ||
+    (holder?.type === "assignment_expression" && /^(module\.)?exports$/.test(holder.childForFieldName("left")?.text ?? ""))
+  );
+}
+
+export function extractUsedNamesWithLanguage(tree: Parser.Tree, language: unknown): Set<string> {
+  return new Set(
+    captureNodes(language, tree, NAME_QUERY)
+      .filter((capture) => !declaresOrExports(capture.node))
+      .map((capture) => capture.node.text),
+  );
 }
 
 function captureNodes(language: unknown, tree: Parser.Tree, querySource: string): Parser.QueryCapture[] {
@@ -211,9 +286,8 @@ export function extractExportsWithLanguage(tree: Parser.Tree, language: unknown)
   return uniqueBy(exports, (entry) => `${entry.name}:${entry.line}:${entry.source ?? ""}:${entry.isWildcard ?? false}`);
 }
 
-export function parseJavaScriptFile(filePath: string): ParsedModule {
-  const sourceText = readFileSync(filePath, "utf8");
-  const tree = parser.parse(sourceText);
+export function parseJavaScriptFile(filePath: string, options: ParseOptions = {}): ParsedModule {
+  const tree = parseSource(parser, readFileSync(filePath, "utf8"));
 
   return {
     file: filePath,
@@ -223,5 +297,6 @@ export function parseJavaScriptFile(filePath: string): ParsedModule {
     ),
     exports: extractExports(tree),
     calls: extractCallSites(tree),
+    ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, JavaScript) } : {}),
   };
 }

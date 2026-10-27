@@ -4,16 +4,28 @@ import path from "node:path";
 
 import { loadConfigSync } from "../config/loader.js";
 import { ReachableError } from "./errors.js";
+import type { ReachableConfig } from "../config/types.js";
 import type { InstalledPackage } from "../vuln/types.js";
+
+type PackageLockV3Entry = {
+  name?: string;
+  version?: string;
+  dev?: boolean;
+  link?: boolean;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
 
 type PackageLockV3 = {
   lockfileVersion?: number;
-  packages?: Record<string, { name?: string; version?: string; dev?: boolean }>;
+  packages?: Record<string, PackageLockV3Entry>;
 };
 
 type PackageLockV2Node = {
   version?: string;
   dev?: boolean;
+  requires?: Record<string, string>;
   dependencies?: Record<string, PackageLockV2Node>;
 };
 
@@ -21,6 +33,8 @@ type PackageLockV2 = {
   lockfileVersion?: number;
   dependencies?: Record<string, PackageLockV2Node>;
 };
+
+type PackageLock = PackageLockV2 & PackageLockV3;
 
 function packageLockPath(cwd: string): string {
   const directPath = path.join(cwd, "package-lock.json");
@@ -37,12 +51,19 @@ function packageLockPath(cwd: string): string {
   throw new ReachableError("E001", "Run npm install first, or specify --cwd");
 }
 
-function shouldIncludePackage(name: string, isDevPackage: boolean, cwd: string): boolean {
+function readPackageLock(cwd: string): PackageLock {
+  return JSON.parse(readFileSync(packageLockPath(cwd), "utf8")) as PackageLock;
+}
+
+function hasPackagesMap(lockfile: PackageLock): boolean {
+  return lockfile.lockfileVersion === 3 || Boolean(lockfile.packages);
+}
+
+function shouldIncludePackage(name: string, isDevPackage: boolean, config: ReachableConfig): boolean {
   if (process.argv.includes("--include-dev")) {
     return true;
   }
 
-  const config = loadConfigSync(cwd);
   if (config.devPackages.includes(name)) {
     return false;
   }
@@ -50,15 +71,16 @@ function shouldIncludePackage(name: string, isDevPackage: boolean, cwd: string):
   return !isDevPackage;
 }
 
+// "node_modules/foo" -> foo, "node_modules/a/node_modules/@s/b" -> @s/b; null for the root and folders.
 function packageNameFromPathKey(key: string): string | null {
   const normalized = key.replace(/\\/g, "/");
-  const marker = "/node_modules/";
+  const marker = "node_modules/";
+  const lastMarkerIndex = normalized.lastIndexOf(marker);
 
-  if (!normalized.includes("node_modules/")) {
+  if (lastMarkerIndex === -1) {
     return null;
   }
 
-  const lastMarkerIndex = normalized.lastIndexOf(marker);
   const tail = normalized.slice(lastMarkerIndex + marker.length);
   if (tail.startsWith("@")) {
     return tail.split("/").slice(0, 2).join("/");
@@ -67,7 +89,15 @@ function packageNameFromPathKey(key: string): string | null {
   return tail.split("/")[0] ?? null;
 }
 
-function parseV3(lockfile: PackageLockV3, cwd: string): InstalledPackage[] {
+// Keyed by name@version, so a nested copy (node_modules/a/node_modules/lodash@4.17.20) is not dropped in favour of
+// the hoisted one. A version installed both hoisted and nested counts as hoisted: the app can load it.
+export function addInstalledPackage(packages: Map<string, InstalledPackage>, installed: InstalledPackage): void {
+  const key = `${installed.name}@${installed.version}`;
+  const existing = packages.get(key);
+  packages.set(key, existing && !existing.nested ? existing : installed);
+}
+
+function parseV3(lockfile: PackageLockV3, config: ReachableConfig): InstalledPackage[] {
   const packages = new Map<string, InstalledPackage>();
 
   for (const [packageKey, value] of Object.entries(lockfile.packages ?? {})) {
@@ -76,15 +106,16 @@ function parseV3(lockfile: PackageLockV3, cwd: string): InstalledPackage[] {
     }
 
     const name = value.name ?? packageNameFromPathKey(packageKey);
-    if (!name || !value.version || !shouldIncludePackage(name, Boolean(value.dev), cwd)) {
+    if (!name || !value.version || !shouldIncludePackage(name, Boolean(value.dev), config)) {
       continue;
     }
 
-    packages.set(name, {
+    addInstalledPackage(packages, {
       name,
       version: value.version,
       ecosystem: "npm",
       dev: Boolean(value.dev),
+      nested: packageKey.split("node_modules/").length > 2,
     });
   }
 
@@ -93,38 +124,70 @@ function parseV3(lockfile: PackageLockV3, cwd: string): InstalledPackage[] {
 
 function walkV2Dependencies(
   dependencies: Record<string, PackageLockV2Node>,
-  packages: Map<string, InstalledPackage>,
-  cwd: string,
+  visit: (name: string, node: PackageLockV2Node, depth: number) => void,
+  depth = 0,
 ): void {
   for (const [name, node] of Object.entries(dependencies)) {
-    if (node.version && shouldIncludePackage(name, Boolean(node.dev), cwd)) {
-      packages.set(name, {
+    visit(name, node, depth);
+
+    if (node.dependencies) {
+      walkV2Dependencies(node.dependencies, visit, depth + 1);
+    }
+  }
+}
+
+function parseV2(lockfile: PackageLockV2, config: ReachableConfig): InstalledPackage[] {
+  const packages = new Map<string, InstalledPackage>();
+  walkV2Dependencies(lockfile.dependencies ?? {}, (name, node, depth) => {
+    if (node.version && shouldIncludePackage(name, Boolean(node.dev), config)) {
+      addInstalledPackage(packages, {
         name,
         version: node.version,
         ecosystem: "npm",
         dev: Boolean(node.dev),
+        nested: depth > 0,
       });
     }
-
-    if (node.dependencies) {
-      walkV2Dependencies(node.dependencies, packages, cwd);
-    }
-  }
-}
-
-function parseV2(lockfile: PackageLockV2, cwd: string): InstalledPackage[] {
-  const packages = new Map<string, InstalledPackage>();
-  walkV2Dependencies(lockfile.dependencies ?? {}, packages, cwd);
+  });
   return [...packages.values()];
 }
 
 export function parsePackageLock(cwd: string): InstalledPackage[] {
-  const lockfilePath = packageLockPath(cwd);
-  const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8")) as PackageLockV2 & PackageLockV3;
+  const lockfile = readPackageLock(cwd);
+  const config = loadConfigSync(cwd);
 
-  if (lockfile.lockfileVersion === 3 || lockfile.packages) {
-    return parseV3(lockfile, cwd);
+  return hasPackagesMap(lockfile) ? parseV3(lockfile, config) : parseV2(lockfile, config);
+}
+
+/**
+ * Names that installed packages declare as dependencies, optional or peer dependencies. Their code is not analyzed,
+ * so any of them may call into these packages. The project root and folders inside it (workspaces) are the app
+ * itself; linked folders outside it (file:../shared) are not analyzed and count like installed packages.
+ */
+export function packagesUsedByDependencies(cwd: string): Set<string> {
+  const lockfile = readPackageLock(cwd);
+  const config = loadConfigSync(cwd);
+  const used = new Set<string>();
+
+  if (!hasPackagesMap(lockfile)) {
+    walkV2Dependencies(lockfile.dependencies ?? {}, (name, node) => {
+      if (shouldIncludePackage(name, Boolean(node.dev), config)) {
+        Object.keys(node.requires ?? {}).forEach((dependency) => used.add(dependency));
+      }
+    });
+    return used;
   }
 
-  return parseV2(lockfile, cwd);
+  for (const [packageKey, value] of Object.entries(lockfile.packages ?? {})) {
+    const name = packageNameFromPathKey(packageKey) ?? (packageKey.startsWith("../") ? value.name ?? packageKey : null);
+    if (!name || value.link || !shouldIncludePackage(value.name ?? name, Boolean(value.dev), config)) {
+      continue;
+    }
+
+    for (const dependency of Object.keys({ ...value.dependencies, ...value.optionalDependencies, ...value.peerDependencies })) {
+      used.add(dependency);
+    }
+  }
+
+  return used;
 }

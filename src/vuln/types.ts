@@ -27,6 +27,7 @@ export interface AdvisorySeverity {
 export interface Advisory {
   id: string;
   aliases?: string[];
+  summary?: string;
   details?: string;
   severity?: AdvisorySeverity[];
   affected?: AdvisoryAffected[];
@@ -43,6 +44,8 @@ export interface InstalledPackage {
   version: string;
   ecosystem: string;
   dev?: boolean;
+  /** Installed under another package (node_modules/a/node_modules/b): only that package's code loads this copy. */
+  nested?: boolean;
 }
 
 export interface VulnSymbol {
@@ -52,10 +55,28 @@ export interface VulnSymbol {
   severity: "CRITICAL" | "HIGH" | "MODERATE" | "LOW";
   exportedSymbol: string | null;
   affectedVersionRange: string;
+  /** The installed version the result is for; a package can be installed in several versions. */
+  installedVersion?: string;
 }
+
+/** lodash@4.17.20, or the package name alone when the version is not known. */
+export function packageLabel(advisory: VulnSymbol): string {
+  return advisory.installedVersion ? `${advisory.package}@${advisory.installedVersion}` : advisory.package;
+}
+
+/** Why a result is UNKNOWN; the README's Limitations section explains each one. */
+export type UnknownReason =
+  | "lookup-failed"
+  | "not-imported"
+  | "symbol-unknown"
+  | "transitive"
+  | "symbol-unconfirmed"
+  | "unresolved-reference";
 
 export interface ReachabilityResult {
   advisory: VulnSymbol;
   status: "REACHABLE" | "UNREACHABLE" | "UNKNOWN";
   callPath: string[] | null;
+  /** Set on UNKNOWN results only. */
+  reason?: UnknownReason;
 }

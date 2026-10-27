@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createCacheKey, getCached, setCache } from "../../src/vuln/cache.js";
+import { createCacheKey, getCached, getCachedRegardlessOfTtl, setCache } from "../../src/vuln/cache.js";
 import type { Advisory } from "../../src/vuln/types.js";
 
 const createdDirs: string[] = [];
@@ -69,5 +70,21 @@ describe("vuln/cache", () => {
     );
 
     expect(getCached(key, cacheDir, 24)).toBeNull();
+  });
+
+  it("never reads the id-only records that 1.0.11 and earlier cached", () => {
+    const cacheDir = makeTempDir();
+    const legacyKey = createHash("sha256").update("lodash@4.17.20").digest("hex");
+    writeFileSync(
+      path.join(cacheDir, `${legacyKey}.json`),
+      JSON.stringify({ fetchedAt: new Date().toISOString(), advisories: [{ id: "GHSA-35jh-r3h4-6jhm", modified: "2026-10-17T02:55:38Z" }] }),
+      "utf8",
+    );
+
+    const key = createCacheKey("lodash", "4.17.20");
+
+    expect(key).not.toBe(legacyKey);
+    expect(getCached(key, cacheDir, 24)).toBeNull();
+    expect(getCachedRegardlessOfTtl(key, cacheDir)).toBeNull();
   });
 });
