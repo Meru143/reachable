@@ -1,20 +1,24 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import nock from "nock";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   analyze,
   collectSourceFiles,
   detectEntryPoints,
+  namedInDependencyCode,
 } from "../src/analyzer.js";
-import { ReachableError } from "../src/utils/errors.js";
+import { ParseError, ReachableError } from "../src/utils/errors.js";
 import { createCacheKey } from "../src/vuln/cache.js";
 import { fixturePath, mockOsv } from "./helpers.js";
 import type { Advisory, AdvisoryAffected } from "../src/vuln/types.js";
+
+// OSV retries back off for seconds; the tests do not wait.
+vi.mock("node:timers/promises", () => ({ setTimeout: () => Promise.resolve() }));
 
 const createdDirs: string[] = [];
 
@@ -126,7 +130,7 @@ function lodashApp(source: string, packages: Record<string, object> = {}, lodash
   return cwd;
 }
 
-function verdicts(results: Awaited<ReturnType<typeof analyze>>): Array<[string, string | null, string, string | undefined]> {
+function verdicts({ results }: Awaited<ReturnType<typeof analyze>>): Array<[string, string | null, string, string | undefined]> {
   return results.map((result) => [result.advisory.ghsaId, result.advisory.exportedSymbol, result.status, result.reason]);
 }
 
@@ -136,6 +140,7 @@ beforeAll(() => {
 
 afterEach(() => {
   nock.cleanAll();
+  vi.unstubAllGlobals();
 
   while (createdDirs.length > 0) {
     const dir = createdDirs.pop();
@@ -230,7 +235,7 @@ describe("analyzer", () => {
       ],
     });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("simple-express"),
       noCache: true,
     });
@@ -245,7 +250,7 @@ describe("analyzer", () => {
   it("hydrates each advisory and reports it for the installed package only", async () => {
     mockOsv({ lodash: [templateAdvisory] });
 
-    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\nconsole.log(_.template("x"));\n') });
+    const { results } = await analyze({ cwd: lodashApp('const _ = require("lodash");\nconsole.log(_.template("x"));\n') });
 
     expect(results).toEqual([
       {
@@ -493,12 +498,12 @@ describe("analyzer", () => {
     expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
   });
 
-  it("does not read the symbol from files no entry point reaches", async () => {
+  it("reads the symbol from files no entry point reaches, since they may still run", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
     writeProjectFile(cwd, path.join("scripts", "unused.js"), 'const _ = require("lodash");\n_.template("x");\n');
 
-    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
   });
 
   it("reads calls from source files of 32 KB and more", async () => {
@@ -515,7 +520,7 @@ describe("analyzer", () => {
       minimist: [advisoryFor("minimist", "minimist", "GHSA-workspace-minimist")],
     });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("monorepo"),
       noCache: true,
     });
@@ -532,7 +537,7 @@ describe("analyzer", () => {
       JSON.stringify(
         {
           fetchedAt: "2000-01-01T00:00:00.000Z",
-          advisories: [advisoryFor("lodash", "trim", "GHSA-stale-cache")],
+          advisories: [advisoryFor("lodash", "template", "GHSA-stale-cache")],
         },
         null,
         2,
@@ -545,7 +550,7 @@ describe("analyzer", () => {
       .get("/v1/vulns/GHSA-stale-cache")
       .reply(404, { code: 5, message: "Bug not found." });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("simple-express"),
       cacheDir,
       cacheTtlHours: 0,
@@ -570,6 +575,7 @@ describe("analyzer", () => {
     const results = await analyze({ cwd });
 
     expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+    expect(results.unchecked).toEqual(["lodash@4.17.20"]);
     expect(existsSync(path.join(cwd, ".reachable-cache"))).toBe(false);
   });
 
@@ -608,8 +614,203 @@ describe("analyzer", () => {
     mockOsv({ lodash: [templateAdvisory] });
     const online = await analyze({ cwd });
 
-    expect(offline).toEqual([]);
+    expect(offline).toEqual({ results: [], unchecked: ["lodash@4.17.20"] });
     expect(verdicts(online)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
-    expect(online[0]?.advisory.package).toBe("lodash");
+    expect(online.results[0]?.advisory.package).toBe("lodash");
+  });
+
+  // Each regression below is named after the verification fixture of 1.0.12 that gave a false UNREACHABLE.
+  const greetLib = 'const _ = require("lodash");\nexports.greet = (name) => _.template("Hello <%= name %>")({ name });\n';
+
+  it("parses an extensionless bin as JavaScript (f9b-bincli)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", bin: { greet: "bin/greet" } }));
+    writeProjectFile(cwd, path.join("bin", "greet"), '#!/usr/bin/env node\nconst { greet } = require("../lib/greet.js");\nconsole.log(greet("world"));\n');
+    writeProjectFile(cwd, path.join("lib", "greet.js"), greetLib);
+
+    const { results } = await analyze({ cwd });
+
+    expect(results.map((result) => [result.status, result.callPath])).toEqual([
+      ["REACHABLE", ["bin/greet::module", "lib/greet.js::module", "lib/greet.js::call:_.template:2"]],
+    ]);
+  });
+
+  it("resolves a main that names a directory to its index file (f16-maindir)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "lib" }));
+    writeProjectFile(cwd, path.join("lib", "index.js"), greetLib);
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+  });
+
+  it("follows an extensionless --entry such as bin/www (f9-binwww)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", scripts: { start: "node ./bin/www" } }));
+    writeProjectFile(cwd, path.join("bin", "www"), '#!/usr/bin/env node\nvar app = require("../app");\nrequire("http").createServer(app).listen(3000);\n');
+    writeProjectFile(cwd, "app.js", 'var router = require("./routes/index");\nmodule.exports = (req, res) => router(req, res);\n');
+    writeProjectFile(cwd, path.join("routes", "index.js"), 'var _ = require("lodash");\nmodule.exports = function (req, res) {\n  res.end(_.template("Hi <%= name %>")({ name: req.url }));\n};\n');
+
+    const { results } = await analyze({ cwd, entry: ["bin/www"] });
+
+    expect(results.map((result) => [result.status, result.callPath])).toEqual([
+      ["REACHABLE", ["bin/www::module", "app.js::module", "routes/index.js::module", "routes/index.js::call:_.template:3"]],
+    ]);
+  });
+
+  it("fails, naming the file, on a given entry that is missing or cannot be parsed (f1-cfgtypo)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    writeProjectFile(cwd, path.join("bin", "start"), "#!/bin/sh\nexec node index.js\n");
+
+    await expect(analyze({ cwd, entry: ["src/index.js"] })).rejects.toMatchObject({ code: "E002", message: "Entry point not found: src/index.js" });
+    await expect(analyze({ cwd, entry: ["index.js", "indx.js"] })).rejects.toThrow("Entry point not found: indx.js");
+    await expect(analyze({ cwd, entry: ["package.json"] })).rejects.toThrow(ParseError);
+    await expect(analyze({ cwd, entry: ["bin/start"] })).rejects.toThrow("Cannot parse entry point bin/start: Not JavaScript");
+  });
+
+  it("skips a detected bin that is a shell script, and fails with E002 when nothing usable is left", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    writeProjectFile(cwd, path.join("bin", "start"), "#!/bin/sh\nexec node index.js\n");
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "index.js", bin: { start: "bin/start" } }));
+
+    expect(detectEntryPoints(cwd)).toEqual([path.join(cwd, "index.js")]);
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", bin: { start: "bin/start" } }));
+    expect(() => detectEntryPoints(cwd)).toThrow(ReachableError);
+  });
+
+  it("analyzes an entry point named like a test file", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    writeProjectFile(cwd, "smoke.test.js", 'const _ = require("lodash");\n_.template("x");\n');
+
+    expect(verdicts(await analyze({ cwd, entry: ["smoke.test.js"] }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+  });
+
+  it.each([
+    ["the entry imports lodash too (f5-dynroute)", 'const _ = require("lodash");\nconsole.log(_.map(Object.keys(routes), String));\n'],
+    ["only the route imports lodash (f5b-dynroute-only)", "console.log(routes.greet('world'));\n"],
+  ])("reports UNKNOWN (unresolved-reference) for a call in a route loaded with fs.readdirSync, when %s", async (_label, usage) => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp(
+      `const fs = require("fs");\nconst path = require("path");\nconst routes = {};\nfor (const file of fs.readdirSync(path.join(__dirname, "routes"))) {\n  routes[path.basename(file, ".js")] = require(path.join(__dirname, "routes", file));\n}\n${usage}`,
+    );
+    writeProjectFile(cwd, path.join("routes", "greet.js"), 'const _ = require("lodash");\nmodule.exports = (name) => _.template("Hello <%= name %>")({ name });\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
+  });
+
+  it("reports UNKNOWN (unresolved-reference) when a template file names the symbol", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(cwd, path.join("views", "index.ejs"), "<%= _.template(body)() %>\n");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
+  });
+
+  it("parses .cts files and resolves a TypeScript import by its compiled name (f18-cts)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    rmSync(path.join(cwd, "index.js"));
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "dist/index.js" }));
+    writeProjectFile(cwd, path.join("src", "index.ts"), 'import _ from "lodash";\nimport { greet } from "./greet.cjs";\nexport const doubled = _.map([1, 2], (n) => n * 2);\nexport const hello = greet("visitor");\n');
+    writeProjectFile(cwd, path.join("src", "greet.cts"), 'import _ from "lodash";\nexport function greet(name: string): string {\n  return _.template("Hello <%= name %>")({ name });\n}\n');
+
+    const { results } = await analyze({ cwd });
+
+    expect(results.map((result) => [result.status, result.callPath])).toEqual([
+      ["REACHABLE", ["src/index.ts::module", "src/greet.cts::module", "src/greet.cts::call:_.template:3"]],
+    ]);
+  });
+
+  it("reports UNKNOWN (transitive) when another package's code requires it without declaring it (f8-consolidate-0.16.0)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const cons = require("consolidate");\nconst _ = require("lodash");\nmodule.exports = { engine: cons.lodash, items: _.map([1], String) };\n', {
+      "node_modules/consolidate": { version: "0.16.0", dependencies: { bluebird: "^3.7.2" } },
+    });
+    writeProjectFile(cwd, path.join("node_modules", "consolidate", "package.json"), JSON.stringify({ name: "consolidate", version: "0.16.0", main: "index.js" }));
+    writeProjectFile(cwd, path.join("node_modules", "consolidate", "lib", "consolidate.js"), "exports.lodash = function (str, options) {\n  return require('lodash').template(str)(options);\n};\n");
+    const declared = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(declared, path.join("node_modules", "lodash", "fp.js"), "module.exports = require('lodash');\n");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "transitive"]]);
+    // lodash naming itself does not count.
+    expect(verdicts(await analyze({ cwd: declared }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("reports what it could not check when OSV is unreachable and nothing is cached, asking OSV no further (f12-offline)", async () => {
+    const offline = vi.fn(() => Promise.reject(new TypeError("fetch failed")));
+    vi.stubGlobal("fetch", offline);
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n', { "node_modules/qs": { version: "6.7.0" } });
+
+    expect(await analyze({ cwd })).toEqual({ results: [], unchecked: ["lodash@4.17.20", "qs@6.7.0"] });
+    // The first lookup and its three retries; qs is not tried once lodash's lookup has failed.
+    expect(offline).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports REACHABLE from an expired cache entry when OSV is unreachable (f12-offline)", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("fetch failed"))));
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    writeProjectFile(
+      cwd,
+      path.join(".reachable-cache", `${createCacheKey("lodash", "4.17.20")}.json`),
+      JSON.stringify({ fetchedAt: "2000-01-01T00:00:00.000Z", advisories: [templateAdvisory, textAdvisory("GHSA-29mw-wpgm-hmr9", "ReDoS via the `trim` function.", "MODERATE")] }),
+    );
+
+    const scan = await analyze({ cwd });
+
+    expect(scan.unchecked).toEqual([]);
+    expect(verdicts(scan)).toEqual([
+      ["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined],
+      ["GHSA-29mw-wpgm-hmr9", "trim", "UNKNOWN", "lookup-failed"],
+    ]);
+  });
+
+  it("counts a package with no cached data on a dry run, without asking OSV", async () => {
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+
+    expect(await analyze({ cwd, dryRun: true })).toEqual({ results: [], unchecked: ["lodash@4.17.20"] });
+  });
+});
+
+describe("namedInDependencyCode", () => {
+  it("finds module specifiers in installed packages' code at any depth, except a package's own, dev-only packages' and linked workspaces'", () => {
+    const cwd = makeTempDir();
+    writeProjectFile(
+      cwd,
+      "package-lock.json",
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          "": { name: "app", workspaces: ["packages/*"] },
+          "node_modules/a": { version: "1.0.0" },
+          "node_modules/a/node_modules/b": { version: "1.0.0" },
+          "node_modules/@scope/c": { version: "1.0.0" },
+          "node_modules/minimist": { version: "1.2.5" },
+          "node_modules/devtool": { version: "1.0.0", dev: true },
+          "node_modules/web": { resolved: "packages/web", link: true },
+          "packages/web": { name: "web" },
+        },
+      }),
+    );
+    writeProjectFile(cwd, path.join("node_modules", "a", "index.js"), "module.exports = require('lodash/fp');\n");
+    writeProjectFile(cwd, path.join("node_modules", "a", "node_modules", "b", "index.cjs"), 'const chalk = require("chalk");\n');
+    writeProjectFile(cwd, path.join("node_modules", "@scope", "c", "index.mjs"), "export default await import(`debug`);\n");
+    writeProjectFile(cwd, path.join("node_modules", "minimist", "index.js"), "module.exports = require('minimist/lib');\n");
+    writeProjectFile(cwd, path.join("node_modules", "devtool", "index.js"), "require('qs');\n");
+    writeProjectFile(cwd, path.join("node_modules", ".cache", "app.js"), "require('express');\n");
+    writeProjectFile(cwd, path.join("node_modules", "a", "index.d.ts"), "import 'semver';\n");
+    writeProjectFile(cwd, path.join("packages", "web", "index.js"), "require('react');\n");
+    symlinkSync(path.join(cwd, "packages", "web"), path.join(cwd, "node_modules", "web"), "junction");
+    const names = ["lodash", "chalk", "debug", "minimist", "qs", "express", "semver", "react"];
+
+    expect(namedInDependencyCode(cwd, names)).toEqual(new Set(["lodash", "chalk", "debug"]));
+    // Past the byte limit nothing is ruled out.
+    expect(namedInDependencyCode(cwd, names, 10)).toBeNull();
   });
 });

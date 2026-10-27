@@ -2,42 +2,34 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
-import { buildGraph } from "./graph/builder.js";
-import { findPathTo, findReachableNodes } from "./graph/traversal.js";
+import { buildGraph, isSkippedTestFile } from "./graph/builder.js";
+import { findPathTo } from "./graph/traversal.js";
 import type { CallGraph } from "./graph/types.js";
-import { parseFile } from "./parser/index.js";
-import { resolveImport } from "./parser/resolver.js";
+import { languageOf, parseFile } from "./parser/index.js";
+import { resolveFileCandidate, resolveImport } from "./parser/resolver.js";
 import { logger } from "./utils/logger.js";
 import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCache } from "./vuln/cache.js";
 import { fetchVulns, queryBatch } from "./vuln/osv.js";
 import { extractVulnSymbols } from "./vuln/symbols.js";
 import type { Advisory, InstalledPackage, ReachabilityResult, UnknownReason } from "./vuln/types.js";
-import { addInstalledPackage, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
-import { ReachableError } from "./utils/errors.js";
+import { addInstalledPackage, excludedPackagePaths, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
+import { OsvApiError, ReachableError } from "./utils/errors.js";
 
 export interface AnalyzeOptions {
   cwd: string;
   entry?: string[];
   ignore?: string[];
-  depth?: number;
   dryRun?: boolean;
   noCache?: boolean;
   cacheDir?: string;
   cacheTtlHours?: number;
 }
 
-function resolveFileCandidate(candidate: string): string | null {
-  if (existsSync(candidate)) {
-    return candidate;
-  }
-
-  for (const extension of [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs"]) {
-    if (existsSync(`${candidate}${extension}`)) {
-      return `${candidate}${extension}`;
-    }
-  }
-
-  return null;
+export interface AnalyzeResult {
+  results: ReachabilityResult[];
+  /** name@version of each package whose advisories are missing: the OSV lookup failed and nothing was cached, or, on
+   * a dry run, nothing was cached. */
+  unchecked: string[];
 }
 
 function preferredEntryCandidates(candidate: string, packageDir: string): string[] {
@@ -197,13 +189,31 @@ function entryCandidatesForPackage(packageDir: string): string[] {
   return [...new Set(candidates)];
 }
 
+// An entry point the graph cannot start from leaves every verdict UNREACHABLE, so a given entry must exist (and
+// buildGraph fails on one it cannot parse), and a detected one that is not code is dropped.
 export function detectEntryPoints(cwd: string, explicitEntries?: string[]): string[] {
   if (explicitEntries && explicitEntries.length > 0) {
-    return explicitEntries.map((entry) => path.resolve(cwd, entry));
+    return explicitEntries.map((entry) => {
+      const file = resolveFileCandidate(path.resolve(cwd, entry));
+      if (!file) {
+        throw new ReachableError("E002", `Entry point not found: ${entry}`);
+      }
+
+      return file;
+    });
   }
 
   const packageDirs = [cwd, ...workspaceDirectories(cwd)];
-  const entryPoints = packageDirs.flatMap((packageDir) => entryCandidatesForPackage(packageDir));
+  const entryPoints = packageDirs
+    .flatMap((packageDir) => entryCandidatesForPackage(packageDir))
+    .filter((file) => {
+      if (languageOf(file)) {
+        return true;
+      }
+
+      logger.warn({ file }, "Skipping an entry point that is not JavaScript or TypeScript");
+      return false;
+    });
 
   if (entryPoints.length === 0) {
     logger.warn({ cwd }, "No entry point detected");
@@ -248,35 +258,44 @@ function cacheSettings(options: AnalyzeOptions): { cacheDir: string; ttlHours: n
   };
 }
 
-async function advisoriesForPackage(
-  packageName: string,
-  packageVersion: string,
-  options: AnalyzeOptions,
-  fetched: Map<string, Promise<Advisory>>,
-): Promise<{ advisories: Advisory[]; degraded: Set<string> }> {
+type Lookup = {
+  advisories: Advisory[];
+  degraded: Set<string>;
+  /** Some of the package's advisories are missing from `advisories`. */
+  unchecked: boolean;
+};
+
+// Shared by one run: every advisory record is fetched once, and once a batch lookup has failed (after its retries)
+// for a reason that is not about the one package, later packages do not wait through retries of their own.
+type OsvSession = { fetched: Map<string, Promise<Advisory>>; outage?: unknown };
+
+async function advisoriesForPackage(packageName: string, packageVersion: string, options: AnalyzeOptions, osv: OsvSession): Promise<Lookup> {
   const { cacheDir, ttlHours } = cacheSettings(options);
   const cacheKey = createCacheKey(packageName, packageVersion);
 
   if (!options.noCache) {
     const cached = getCached(cacheKey, cacheDir, ttlHours);
     if (cached) {
-      return {
-        advisories: cached,
-        degraded: new Set(),
-      };
+      return { advisories: cached, degraded: new Set(), unchecked: false };
     }
   }
 
   if (options.dryRun) {
-    return {
-      advisories: [],
-      degraded: new Set(),
-    };
+    return { advisories: [], degraded: new Set(), unchecked: true };
   }
 
   try {
-    const ids = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]);
-    const { advisories, failed } = await fetchVulns(ids, fetched);
+    if (osv.outage) {
+      throw osv.outage;
+    }
+
+    const ids = await queryBatch([{ name: packageName, version: packageVersion, ecosystem: "npm" }]).catch((error: unknown) => {
+      if (!(error instanceof OsvApiError) || error.statusCode === 429 || error.statusCode >= 500) {
+        osv.outage = error;
+      }
+      throw error;
+    });
+    const { advisories, failed } = await fetchVulns(ids, osv.fetched);
     if (failed.length === 0) {
       if (!options.noCache) {
         // A cache that cannot be written (read-only checkout) must not turn a successful lookup into a failed one.
@@ -290,13 +309,10 @@ async function advisoriesForPackage(
         }
       }
 
-      return {
-        advisories,
-        degraded: new Set(),
-      };
+      return { advisories, degraded: new Set(), unchecked: false };
     }
 
-    // Keep the records that arrived. A failed one comes from the stale cache when it has it, and is left out
+    // Keep the records that arrived. A failed one comes from the stale cache when it has it, and is missing
     // otherwise. A partial result is not cached, so the next run retries.
     const stale = options.noCache ? [] : getCachedRegardlessOfTtl(cacheKey, cacheDir) ?? [];
     const staleRecords = stale.filter((advisory) => failed.some((entry) => entry.id === advisory.id));
@@ -312,6 +328,7 @@ async function advisoriesForPackage(
     return {
       advisories: [...advisories, ...staleRecords],
       degraded: new Set(staleRecords.map((advisory) => advisory.id)),
+      unchecked: staleRecords.length < failed.length,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -326,10 +343,7 @@ async function advisoriesForPackage(
           },
           "Using stale advisory cache after OSV fetch failure",
         );
-        return {
-          advisories: staleAdvisories,
-          degraded: new Set(staleAdvisories.map((advisory) => advisory.id)),
-        };
+        return { advisories: staleAdvisories, degraded: new Set(staleAdvisories.map((advisory) => advisory.id)), unchecked: false };
       }
     }
 
@@ -339,12 +353,9 @@ async function advisoriesForPackage(
         package: packageName,
         version: packageVersion,
       },
-      "OSV advisory lookup failed; continuing without advisories",
+      "OSV advisory lookup failed and nothing is cached; this package is not checked",
     );
-    return {
-      advisories: [],
-      degraded: new Set(),
-    };
+    return { advisories: [], degraded: new Set(), unchecked: true };
   }
 }
 
@@ -544,10 +555,13 @@ function exportedLocalNames(text: string, symbol: string): string[] {
 
 type Verdict = Omit<ReachabilityResult, "advisory">;
 
+// Files whose text can name a function: every source file, and components and templates, which are not parsed.
+const PROJECT_FILES = /\.([cm]?[jt]sx?|vue|svelte|astro|ejs|pug|jade|hbs|handlebars|mustache|njk|liquid|eta|html?)$/;
+
 // The app's own files are the only code in the graph: a verdict about dependency code is never UNREACHABLE.
 function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<string>) {
   const packageCode = new Map<string, PackageCode | null>();
-  let reachableSources: string[] | undefined;
+  let projectSources: string[] | undefined;
 
   const unknown = (reason: UnknownReason): Verdict => ({ status: "UNKNOWN", callPath: null, reason });
 
@@ -571,25 +585,22 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
     return !localNames.some((localName) => code.usedNames.has(localName));
   };
 
-  // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph, and
-  // .vue, .svelte and .astro files are not parsed at all, so any mention there counts too.
-  const mentionedInReachableCode = (symbol: string): boolean => {
-    reachableSources ??= [
-      ...[...findReachableNodes(graph, Number.POSITIVE_INFINITY)]
-        .map((id) => graph.nodes.get(id))
-        .filter((node): node is NonNullable<typeof node> => node?.name === "module" && !node.id.startsWith("pkg:"))
-        .map((node) => path.resolve(cwd, node.file)),
-      ...collectSourceFiles(cwd, /\.(vue|svelte|astro)$/),
+  // Any file of the project, reachable from an entry point or not, the graph's files included (an extensionless bin,
+  // dist/ files an entry imports): routes loaded with fs.readdirSync and require(variable) never join the graph,
+  // aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from it, and components and
+  // templates are not parsed. Raw text, so a file the parser cannot read still counts.
+  const mentionedInProject = (symbol: string): boolean => {
+    projectSources ??= [
+      ...new Set([
+        ...[...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
+        ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file)),
+      ]),
     ].map((file) => readFileSync(file, "utf8"));
     const pattern = new RegExp(String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`);
-    return reachableSources.some((source) => pattern.test(source));
+    return projectSources.some((source) => pattern.test(source));
   };
 
   return (installed: InstalledPackage, symbol: string | null, confident: boolean, degraded: boolean): Verdict => {
-    if (degraded) {
-      return unknown("lookup-failed");
-    }
-
     // The app's imports load the hoisted copy; a copy nested under another package is loaded only by that package.
     if (installed.nested) {
       return unknown("transitive");
@@ -609,6 +620,11 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
       return { status: "REACHABLE", callPath };
     }
 
+    // An expired cache entry is good enough to show a call path, never to rule one out.
+    if (degraded) {
+      return unknown("lookup-failed");
+    }
+
     if (usedByDependencies.has(installed.name)) {
       return unknown("transitive");
     }
@@ -617,12 +633,79 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
       return unknown("symbol-unconfirmed");
     }
 
-    if (mentionedInReachableCode(symbol)) {
+    if (mentionedInProject(symbol)) {
       return unknown("unresolved-reference");
     }
 
     return { status: "UNREACHABLE", callPath: null };
   };
+}
+
+// ponytail: one pass over the installed packages' JavaScript, capped at 256 MB read; past the cap the would-be
+// UNREACHABLE verdicts stay UNKNOWN. Stream the files through a worker pool if bigger trees need an answer.
+const MAX_DEPENDENCY_CODE_BYTES = 256 * 1024 * 1024;
+
+// Names among `names` that an installed package's code uses as a module specifier ('lodash', "lodash/fp"): a package
+// can require another without declaring it (consolidate@0.16 loads lodash to render templates), so the lockfile's
+// dependency lists miss it. Every node_modules folder counts, at any depth, except the packages the analysis leaves
+// out (dev-only) and a package's mentions of itself. Symlinks are not followed: npm links workspaces, the app's own
+// code, into node_modules. null when the code is too large to read in full.
+export function namedInDependencyCode(cwd: string, names: string[], maxBytes = MAX_DEPENDENCY_CODE_BYTES): Set<string> | null {
+  const projectDirs = [cwd, ...workspaceDirectories(cwd)];
+  const excluded = new Set(projectDirs.filter(hasPackageLock).flatMap((directory) => [...excludedPackagePaths(directory)]));
+  const specifier = new RegExp(String.raw`(['"\x60])(${names.map(escapeRegExp).join("|")})(?:/[^'"\x60\s]*)?\1`, "g");
+  const found = new Set<string>();
+  let bytes = 0;
+
+  // Every file in a package folder; nested node_modules folders hold other packages.
+  const readPackage = (directory: string, owner: string): boolean => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!(entry.name === "node_modules" ? readNodeModules(fullPath) : readPackage(fullPath, owner))) {
+          return false;
+        }
+      } else if (entry.isFile() && /\.[cm]?jsx?$/.test(entry.name)) {
+        const code = readFileSync(fullPath, "latin1");
+        bytes += code.length;
+        if (bytes > maxBytes) {
+          return false;
+        }
+
+        for (const match of code.matchAll(specifier)) {
+          if (match[2] !== owner) {
+            found.add(match[2]);
+          }
+        }
+      }
+    }
+
+    return true;
+  };
+
+  // node_modules/<name> and node_modules/@scope/<name>; dot folders (.bin, .cache) are not packages.
+  const readNodeModules = (directory: string): boolean =>
+    readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .flatMap((entry) =>
+        entry.name.startsWith("@")
+          ? readdirSync(path.join(directory, entry.name), { withFileTypes: true })
+              .filter((scoped) => scoped.isDirectory())
+              .map((scoped) => [path.join(directory, entry.name, scoped.name), `${entry.name}/${scoped.name}`])
+          : [[path.join(directory, entry.name), entry.name]],
+      )
+      .every(([packageDir, owner]) => excluded.has(packageDir) || readPackage(packageDir, owner));
+
+  try {
+    const complete = projectDirs
+      .map((directory) => path.join(directory, "node_modules"))
+      .filter((directory) => existsSync(directory))
+      .every(readNodeModules);
+    return complete ? found : null;
+  } catch (error) {
+    logger.warn({ error: error instanceof Error ? error.message : String(error) }, "Could not read the installed packages' code");
+    return null;
+  }
 }
 
 function sortResults(results: ReachabilityResult[]): ReachabilityResult[] {
@@ -643,7 +726,7 @@ function sortResults(results: ReachabilityResult[]): ReachabilityResult[] {
   });
 }
 
-export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResult[]> {
+export async function analyze(options: AnalyzeOptions): Promise<AnalyzeResult> {
   const cwd = path.resolve(options.cwd);
   const ignoreSet = new Set(options.ignore ?? []);
   const { cacheDir } = cacheSettings(options);
@@ -656,11 +739,15 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
   const entryPoints = detectEntryPoints(cwd, options.entry);
   const graph = buildGraph(collectSourceFiles(cwd), entryPoints, cwd);
   const verdict = verdictFor(cwd, graph, usedByDependencies);
-  const fetched = new Map<string, Promise<Advisory>>();
+  const osv: OsvSession = { fetched: new Map() };
   const results: ReachabilityResult[] = [];
+  const unchecked: string[] = [];
 
   for (const installedPackage of installedPackages) {
-    const { advisories, degraded } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options, fetched);
+    const { advisories, degraded, unchecked: missing } = await advisoriesForPackage(installedPackage.name, installedPackage.version, options, osv);
+    if (missing) {
+      unchecked.push(`${installedPackage.name}@${installedPackage.version}`);
+    }
 
     for (const advisory of advisories) {
       for (const { confident, ...vulnSymbol } of extractVulnSymbols(advisory, installedPackage.name)) {
@@ -676,5 +763,14 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
     }
   }
 
-  return sortResults(results);
+  // Last, and once for all of them: whether another package's code loads a package that would be UNREACHABLE.
+  const candidates = [...new Set(results.filter((result) => result.status === "UNREACHABLE").map((result) => result.advisory.package))];
+  const named = candidates.length > 0 ? namedInDependencyCode(cwd, candidates) : new Set<string>();
+  const checked = results.map((result): ReachabilityResult =>
+    result.status === "UNREACHABLE" && (named === null || named.has(result.advisory.package))
+      ? { ...result, status: "UNKNOWN", reason: "transitive" }
+      : result,
+  );
+
+  return { results: sortResults(checked), unchecked };
 }

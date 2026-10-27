@@ -15,6 +15,27 @@ const parseFileMock = vi.fn();
 const isNodeReachableMock = vi.fn();
 const findPathToMock = vi.fn();
 const ansiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const defaultConfig = { entry: [], failOn: "high", ignore: [], devPackages: [], cache: { ttlHours: 24, dir: ".reachable-cache" } };
+
+function finding(severity: "CRITICAL" | "HIGH" | "MODERATE" | "LOW", status: "REACHABLE" | "UNKNOWN" = "REACHABLE") {
+  return {
+    advisory: { package: "express", ghsaId: "GHSA-qw6h-vgh9-j6wx", cvssScore: 1, severity, exportedSymbol: "redirect", affectedVersionRange: "" },
+    status,
+    callPath: status === "REACHABLE" ? ["index.js::module", "index.js::call:res.redirect:11"] : null,
+  };
+}
+
+async function scan(args: string[], scanResult: { results: unknown[]; unchecked: string[] }, config: object = defaultConfig) {
+  loadConfigMock.mockResolvedValue(config);
+  analyzeMock.mockResolvedValue(scanResult);
+  formatTableMock.mockReturnValue("table output");
+  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const stderrWrite = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const { scanCommand } = await import("../../src/cli/scan.js");
+
+  await scanCommand.parseAsync(["node", "scan", "--cwd", process.cwd(), ...args]);
+  return { stderr: stderrWrite.mock.calls.map((call) => String(call[0])).join("") };
+}
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -70,6 +91,7 @@ vi.mock("../../src/graph/traversal.js", () => ({
 describe("cli commands", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
     vi.resetModules();
     process.exitCode = 0;
     delete process.env.GITHUB_STEP_SUMMARY;
@@ -86,7 +108,7 @@ describe("cli commands", () => {
         dir: ".reachable-cache",
       },
     });
-    analyzeMock.mockResolvedValue([
+    analyzeMock.mockResolvedValue({ unchecked: [], results: [
       {
         advisory: {
           package: "lodash",
@@ -99,7 +121,7 @@ describe("cli commands", () => {
         status: "REACHABLE",
         callPath: ["src/index.ts::module", "src/index.ts::call:lodash.trim:12"],
       },
-    ]);
+    ] });
     formatJsonMock.mockReturnValue("{\"ok\":true}");
 
     const stdoutWrite = vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -123,7 +145,6 @@ describe("cli commands", () => {
       cwd: process.cwd(),
       entry: ["src/index.ts"],
       ignore: ["GHSA-ignore"],
-      depth: 20,
       dryRun: false,
       noCache: false,
       cacheDir: ".reachable-cache",
@@ -145,7 +166,7 @@ describe("cli commands", () => {
         dir: ".reachable-cache",
       },
     });
-    analyzeMock.mockResolvedValue([
+    analyzeMock.mockResolvedValue({ unchecked: [], results: [
       {
         advisory: {
           package: "lodash",
@@ -170,7 +191,7 @@ describe("cli commands", () => {
         status: "UNKNOWN",
         callPath: null,
       },
-    ]);
+    ] });
 
     const stdoutWrite = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     const { scanCommand } = await import("../../src/cli/scan.js");
@@ -193,7 +214,7 @@ describe("cli commands", () => {
         dir: ".reachable-cache",
       },
     });
-    analyzeMock.mockResolvedValue([
+    analyzeMock.mockResolvedValue({ unchecked: [], results: [
       {
         advisory: {
           package: "lodash",
@@ -206,7 +227,7 @@ describe("cli commands", () => {
         status: "REACHABLE",
         callPath: ["src/index.ts::module"],
       },
-    ]);
+    ] });
     formatTableMock.mockReturnValue("table output");
     formatMarkdownMock.mockReturnValue("## Summary");
     process.env.GITHUB_STEP_SUMMARY = "/tmp/reachable-summary.md";
@@ -230,7 +251,7 @@ describe("cli commands", () => {
         status: "REACHABLE",
         callPath: ["src/index.ts::module"],
       },
-    ]);
+    ], "");
     expect(appendFileSyncMock).toHaveBeenCalledWith("/tmp/reachable-summary.md", "## Summary\n", "utf8");
   });
 
@@ -299,6 +320,43 @@ describe("cli commands", () => {
     expect(rendered).toContain("Path 1\n");
     expect(rendered).toContain("src/index.ts::module\n");
     expect(rendered).toContain("  pkg:lodash::module\n");
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("fails on the config's failOn when --fail-on is not given (f3-cfg-low)", async () => {
+    await scan([], { results: [finding("LOW")], unchecked: [] }, { ...defaultConfig, failOn: "low" });
+    expect(process.exitCode).toBe(1);
+
+    await scan(["--fail-on", "high"], { results: [finding("LOW")], unchecked: [] }, { ...defaultConfig, failOn: "low" });
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("exits 2 and says how many packages it could not check, unless a finding already fails the scan (f12-offline)", async () => {
+    const notice = "1 package could not be checked (the OSV lookup failed and nothing is cached), so these results are incomplete: lodash@4.17.20.";
+
+    const offline = await scan([], { results: [], unchecked: ["lodash@4.17.20"] });
+    expect(process.exitCode).toBe(2);
+    expect(formatTableMock).toHaveBeenCalledWith([], notice);
+    expect(offline.stderr).toContain(notice);
+
+    await scan([], { results: [finding("HIGH")], unchecked: ["lodash@4.17.20"] });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("keeps a dry run's exit code, and says which packages had no cached data", async () => {
+    const dryRun = await scan(["--dry-run"], { results: [finding("LOW", "UNKNOWN")], unchecked: ["lodash@4.17.20", "qs@6.7.0"] });
+
+    expect(process.exitCode).toBe(0);
+    expect(dryRun.stderr).toContain("2 packages had no cached advisory data (or only expired data), so this dry run did not check them: lodash@4.17.20, qs@6.7.0.");
+  });
+
+  it("still accepts --depth, hidden from the help, and says it has no effect", async () => {
+    const withDepth = await scan(["--depth", "5"], { results: [], unchecked: [] });
+    const { scanCommand } = await import("../../src/cli/scan.js");
+
+    expect(withDepth.stderr).toContain("--depth has no effect");
+    expect(analyzeMock.mock.calls[0]?.[0]).not.toHaveProperty("depth");
+    expect(scanCommand.helpInformation()).not.toContain("--depth");
     expect(process.exitCode).toBe(0);
   });
 });

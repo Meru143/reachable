@@ -70,19 +70,30 @@
               <span></span>
               <span></span>
             </div>
-            <pre><code>$ reachable scan --entry src/index.ts
-
-package: minimist
-symbol: minimist.parse
-entrypoint: src/index.ts
-
-verdict: REACHABLE
-reason: src/index.ts -> cli/bootstrap.ts -> utils/argv.ts -> minimist.parse
-confidence: high
-
-next step:
-  patch or pin the dependency before merge
-</code></pre>
+            <pre><code>$ reachable scan --format json | head -n 23
+{
+  "summary": {
+    "reachable": 2,
+    "unreachable": 6,
+    "unknown": 1
+  },
+  "results": [
+    {
+      "advisory": {
+        "package": "lodash",
+        "ghsaId": "GHSA-35jh-r3h4-6jhm",
+        "cvssScore": 7,
+        "severity": "HIGH",
+        "exportedSymbol": "template",
+        "affectedVersionRange": "introduced:0 -&gt; fixed:4.17.21",
+        "installedVersion": "4.17.20"
+      },
+      "status": "REACHABLE",
+      "callPath": [
+        "index.js::module",
+        "index.js::call:_.template:2"
+      ]
+    },</code></pre>
           </aside>
         </section>
 
@@ -91,10 +102,13 @@ next step:
             <p class="eyebrow">Verdicts</p>
             <h2>Cut false positives without pretending static analysis is magic.</h2>
             <p>
-              reachable makes the uncertainty visible. When the tool can prove a path, it says
-              REACHABLE. When it finds none and nothing else could reach the symbol, it says
-              UNREACHABLE. When dependency code, resolution or dynamic behavior leaves a gap, it
-              says UNKNOWN instead of bluffing.
+              reachable makes the uncertainty visible. When a call to the function an advisory
+              names is on an import path from your entry points, it says REACHABLE and shows the
+              path. It says UNREACHABLE only when every entry point parsed, your code imports the
+              copy of the package it loads, no other installed package declares it or names it in
+              its code, the advisory names the function plainly and the package exports it without
+              using it itself, no file in your project mentions the name, and no call path exists.
+              Anything short of that is UNKNOWN, with the reason, instead of a bluff.
             </p>
           </div>
 
@@ -109,7 +123,7 @@ next step:
             </article>
             <article class="card">
               <h3>UNREACHABLE</h3>
-              <p>The package may be installed, but the flagged symbol does not show up on a path from your code.</p>
+              <p>Every condition held: no call path, no mention of the function anywhere in your project, and no other installed package that declares or loads the package. No path reaches the functions the advisory names; a flaw in an internal helper they share with other functions is not seen.</p>
             </article>
           </div>
         </section>

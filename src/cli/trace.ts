@@ -1,13 +1,10 @@
 // `reachable trace <package>` subcommand.
 import { Command } from "commander";
 
-import { Chalk } from "chalk";
-
 import { collectSourceFiles, detectEntryPoints } from "../analyzer.js";
 import { buildGraph } from "../graph/builder.js";
 import { findPathTo } from "../graph/traversal.js";
-
-const chalk = new Chalk({ level: process.env.NO_COLOR ? 0 : 1 });
+import { chalk } from "../utils/color.js";
 
 type TraceOptions = {
   cwd?: string;

@@ -156,4 +156,21 @@ describe("vuln/osv", () => {
     expect(advisories.map((advisory) => advisory.id)).toEqual(["GHSA-a", "GHSA-b"]);
     expect(failed).toMatchObject([{ id: "GHSA-gone", error: { name: OsvApiError.name, statusCode: 404 } }]);
   });
+
+  it("retries network errors like server errors, then throws the last one", async () => {
+    vi.doMock("node:timers/promises", () => ({
+      setTimeout: () => Promise.resolve(),
+    }));
+    const { queryBatch } = await import("../../src/vuln/osv.js");
+    const flaky = vi.fn().mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce(json({ results: [{ vulns: [{ id: "GHSA-a" }] }] }));
+    vi.stubGlobal("fetch", flaky);
+
+    await expect(queryBatch([...packageQuery])).resolves.toEqual(["GHSA-a"]);
+
+    const offline = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", offline);
+
+    await expect(queryBatch([...packageQuery])).rejects.toThrow("fetch failed");
+    expect(offline).toHaveBeenCalledTimes(4);
+  });
 });

@@ -25,17 +25,28 @@ function retryAfterMs(headerValue: string | null): number {
   return parsed >= 1000 ? parsed : parsed * 1000;
 }
 
-// Retries 429 (after Retry-After) and 5xx (exponential backoff) three times, then throws OsvApiError.
+// Retries 429 (after Retry-After), 5xx and network errors (fetch failed: a reset, DNS, a timeout; exponential backoff)
+// three times, then throws: OsvApiError for an HTTP status, the network error otherwise.
 async function requestJson<T>(url: string, body?: unknown): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(url, {
-      method: body === undefined ? "GET" : "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": USER_AGENT,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    } catch (error) {
+      if (attempt === 3) {
+        throw error;
+      }
+
+      await sleep(2000 * 2 ** attempt);
+      continue;
+    }
 
     if (response.status === 429) {
       if (attempt === 3) {

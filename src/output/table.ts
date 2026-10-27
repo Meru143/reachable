@@ -1,10 +1,8 @@
 // cli-table3 terminal output.
 import Table from "cli-table3";
-import { Chalk } from "chalk";
 
+import { chalk } from "../utils/color.js";
 import { packageLabel, type ReachabilityResult } from "../vuln/types.js";
-
-const chalk = new Chalk({ level: process.env.NO_COLOR ? 0 : 1 });
 
 function sectionColor(status: ReachabilityResult["status"]) {
   if (status === "REACHABLE") {
@@ -22,9 +20,10 @@ function sortByScore(results: ReachabilityResult[]): ReachabilityResult[] {
   return [...results].sort((left, right) => right.advisory.cvssScore - left.advisory.cvssScore);
 }
 
-export function formatTable(results: ReachabilityResult[]): string {
+/** `notice`: a line for the end, such as packages that could not be checked. */
+export function formatTable(results: ReachabilityResult[], notice = ""): string {
   if (results.length === 0) {
-    return "No advisories found.";
+    return notice ? `No advisories found in the packages that were checked.\n\n${notice}` : "No advisories found.";
   }
 
   const sections: ReachabilityResult["status"][] = ["REACHABLE", "UNKNOWN", "UNREACHABLE"];
@@ -40,6 +39,8 @@ export function formatTable(results: ReachabilityResult[]): string {
     const table = new Table({
       head: ["Severity", "Package", "GHSA ID", "Status", "Vulnerable Symbol"],
       wordWrap: true,
+      // cli-table3 colours its head and borders whether or not the output is a terminal.
+      ...(chalk.level === 0 ? { style: { head: [], border: [] } } : {}),
     });
 
     for (const row of rows) {
@@ -73,5 +74,5 @@ export function formatTable(results: ReachabilityResult[]): string {
     blocks.push(`${color(status)}\n${table.toString()}`);
   }
 
-  return blocks.join("\n\n");
+  return [...blocks, ...(notice ? [notice] : [])].join("\n\n");
 }

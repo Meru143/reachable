@@ -1,4 +1,5 @@
 // Dispatch to language-specific parsers.
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { parseJavaScriptFile } from "./javascript.js";
@@ -34,20 +35,37 @@ export interface ParsedModule {
 
 export type ParseOptions = { usedNames?: boolean };
 
-export function parseFile(filePath: string, options: ParseOptions = {}): ParsedModule {
+const LANGUAGES = new Map<string, "js" | "ts" | "tsx">([
+  ["", "js"],
+  [".js", "js"],
+  [".mjs", "js"],
+  [".cjs", "js"],
+  [".jsx", "js"],
+  [".ts", "ts"],
+  [".mts", "ts"],
+  [".cts", "ts"],
+  [".tsx", "tsx"],
+]);
+
+/** null when the file is not JavaScript or TypeScript. An extensionless file (bin/www) is JavaScript unless its
+ * shebang names another interpreter (#!/bin/sh). */
+export function languageOf(filePath: string): "js" | "ts" | "tsx" | null {
   const extension = path.extname(filePath).toLowerCase();
-
-  if ([".js", ".mjs", ".cjs", ".jsx"].includes(extension)) {
-    return parseJavaScriptFile(filePath, options);
+  const language = LANGUAGES.get(extension) ?? null;
+  if (extension !== "") {
+    return language;
   }
 
-  if ([".ts", ".mts"].includes(extension)) {
-    return parseTypeScriptFile(filePath, false, options);
+  const firstLine = readFileSync(filePath, "utf8").split("\n", 1)[0] ?? "";
+  return !firstLine.startsWith("#!") || /\bnode\b/.test(firstLine) ? language : null;
+}
+
+export function parseFile(filePath: string, options: ParseOptions = {}): ParsedModule {
+  const language = languageOf(filePath);
+  if (language === null) {
+    const extension = path.extname(filePath).toLowerCase();
+    throw new Error(extension ? `Unsupported file extension: ${extension}` : "Not JavaScript: its shebang names another interpreter");
   }
 
-  if (extension === ".tsx") {
-    return parseTypeScriptFile(filePath, true, options);
-  }
-
-  throw new Error(`Unsupported file extension: ${extension}`);
+  return language === "js" ? parseJavaScriptFile(filePath, options) : parseTypeScriptFile(filePath, language === "tsx", options);
 }

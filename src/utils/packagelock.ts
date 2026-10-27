@@ -152,6 +152,22 @@ function parseV2(lockfile: PackageLockV2, config: ReachableConfig): InstalledPac
   return [...packages.values()];
 }
 
+/** Install folders (node_modules/a/node_modules/b, absolute) of the packages the analysis leaves out: dev-only ones and
+ * the config's devPackages. Empty for a lockfile without a "packages" map. */
+export function excludedPackagePaths(cwd: string): Set<string> {
+  const lockfile = readPackageLock(cwd);
+  const config = loadConfigSync(cwd);
+
+  return new Set(
+    Object.entries(lockfile.packages ?? {})
+      .filter(([packageKey, value]) => {
+        const name = value.name ?? packageNameFromPathKey(packageKey);
+        return name !== null && !shouldIncludePackage(name, Boolean(value.dev), config);
+      })
+      .map(([packageKey]) => path.resolve(cwd, packageKey)),
+  );
+}
+
 export function parsePackageLock(cwd: string): InstalledPackage[] {
   const lockfile = readPackageLock(cwd);
   const config = loadConfigSync(cwd);

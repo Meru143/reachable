@@ -26,14 +26,30 @@ function writeCliError(error: unknown): void {
   process.exit(2);
 }
 
+// exitOverride on every command: commander would otherwise exit 1 itself on a usage error in a subcommand.
 export const program = new Command()
   .name("reachable")
   .version(packageJson.version)
   .description("Vulnerability reachability analyzer for Node.js projects")
   .exitOverride()
-  .addCommand(scanCommand)
-  .addCommand(traceCommand)
-  .addCommand(graphCommand);
+  .addCommand(scanCommand.exitOverride())
+  .addCommand(traceCommand.exitOverride())
+  .addCommand(graphCommand.exitOverride());
+
+export async function run(argv: string[]): Promise<void> {
+  try {
+    await program.parseAsync(argv);
+  } catch (error) {
+    // Commander has already printed the help, the version or the usage error. A usage error exits 2, like any
+    // other error, so that 1 always means a finding.
+    if (error instanceof CommanderError) {
+      process.exitCode = error.exitCode === 0 ? 0 : 2;
+      return;
+    }
+
+    writeCliError(error);
+  }
+}
 
 if (process.argv[1]) {
   process.on("uncaughtException", (error) => {
@@ -44,18 +60,5 @@ if (process.argv[1]) {
     writeCliError(reason);
   });
 
-  void program.parseAsync(process.argv).catch((error: unknown) => {
-    if (error instanceof CommanderError && error.code === "commander.helpDisplayed") {
-      process.exitCode = 0;
-      return;
-    }
-
-    if (error instanceof CommanderError) {
-      process.stderr.write(`${error.message}\n`);
-      process.exitCode = error.exitCode;
-      return;
-    }
-
-    writeCliError(error);
-  });
+  void run(process.argv);
 }

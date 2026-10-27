@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { parseFile } from "../parser/index.js";
 import { resolveImport } from "../parser/resolver.js";
+import { ParseError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 import type { ExportRef, ParsedModule } from "../parser/index.js";
 import type { CallGraph, CallNode } from "./types.js";
@@ -27,9 +28,13 @@ function packageNodeId(packageName: string): string {
   return `pkg:${packageName}::module`;
 }
 
-function isTestFile(filePath: string): boolean {
+/** Test files stay out of the graph, and out of the analysis, unless --include-tests is passed. */
+export function isSkippedTestFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, "/");
-  return /\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/");
+  return (
+    !process.argv.includes("--include-tests") &&
+    (/\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/"))
+  );
 }
 
 function isSourceFile(filePath: string): boolean {
@@ -53,7 +58,6 @@ function addEdge(graph: CallGraph, edge: { from: string; to: string; importedFro
 }
 
 export function buildGraph(files: string[], entryPoints: string[], cwd: string): CallGraph {
-  const includeTests = process.argv.includes("--include-tests");
   const graph: CallGraph = {
     nodes: new Map(),
     edges: [],
@@ -77,6 +81,11 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
       return parsed;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Without its entry point the graph reaches nothing, and every verdict would read UNREACHABLE.
+      if (absoluteEntries.has(filePath)) {
+        throw new ParseError(filePath, `Cannot parse entry point ${normalizeFilePath(filePath, cwd)}: ${message}`);
+      }
+
       logger.warn({ error: message, file: filePath }, "Skipping file after parse failure");
       parsedFiles.set(filePath, null);
       return null;
@@ -150,7 +159,7 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
   function visitFile(filePath: string): void {
     const absoluteFile = path.resolve(cwd, filePath);
 
-    if (!includeTests && isTestFile(absoluteFile)) {
+    if (isSkippedTestFile(absoluteFile) && !absoluteEntries.has(absoluteFile)) {
       return;
     }
 
