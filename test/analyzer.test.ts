@@ -363,6 +363,35 @@ describe("analyzer", () => {
     expect(verdicts(await analyze({ cwd: missing }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
   });
 
+  it.each([
+    [
+      "a package.json imports alias",
+      { imports: { "#internal/*": "./internal/*" } },
+      'const { template } = require("#internal/template.js");\nexports.template = template;\nexports.render = require("#internal/render.js");\n',
+    ],
+    ["a self-reference", {}, 'function template(s) { return s; }\nexports.template = template;\nexports.render = require("lodash/render");\n'],
+    ["an import alias it cannot resolve", {}, 'function template(s) { return s; }\nexports.template = template;\nexports.render = require("#internal/render.js");\n'],
+  ])("follows %s inside the package, or stays UNKNOWN", async (_label, manifest, lodashCode) => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, lodashCode);
+    const packageDir = path.join("node_modules", "lodash");
+    writeProjectFile(cwd, path.join(packageDir, "package.json"), JSON.stringify({ name: "lodash", version: "4.17.20", main: "lodash.js", ...manifest }));
+    writeProjectFile(cwd, path.join(packageDir, "internal", "template.js"), "module.exports.template = function template(s) { return s; };\n");
+    writeProjectFile(cwd, path.join(packageDir, "internal", "render.js"), 'const { template } = require("./template.js");\nmodule.exports = (s) => template(s);\n');
+    writeProjectFile(cwd, path.join(packageDir, "render.js"), 'const { template } = require("./lodash.js");\nmodule.exports = (s) => template(s);\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
+
+  it("resolves an imported subpath through a wildcard export", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconst map = require("lodash/fp/map");\nmap(_.identity);\n', {}, "function template(s) { return s; }\nexports.template = template;\n");
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "package.json"), JSON.stringify({ name: "lodash", version: "4.17.20", exports: { ".": "./lodash.js", "./fp/*": "./fp/*.js" } }));
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "fp", "map.js"), "module.exports = (fn) => (list) => list.map(fn);\n");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
   it("does not count dev-only dependents", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {

@@ -382,6 +382,27 @@ function stringLeaves(value: unknown): string[] {
   return value && typeof value === "object" ? Object.values(value).flatMap(stringLeaves) : [];
 }
 
+// Targets of a package.json "exports" or "imports" entry, wildcards included ("./*": "./lib/*.js").
+function mapTargets(map: Record<string, unknown> | null, key: string): string[] {
+  if (!map) {
+    return [];
+  }
+
+  if (key in map) {
+    return stringLeaves(map[key]);
+  }
+
+  for (const [pattern, value] of Object.entries(map)) {
+    const [prefix, suffix, ...rest] = pattern.split("*");
+    if (suffix !== undefined && rest.length === 0 && key.length >= prefix.length + suffix.length && key.startsWith(prefix) && key.endsWith(suffix)) {
+      const match = key.slice(prefix.length, key.length - suffix.length);
+      return stringLeaves(value).map((target) => target.split("*").join(match));
+    }
+  }
+
+  return [];
+}
+
 // exportText: the entry files and the files they import directly. usedNames: names used (called, aliased, passed,
 // read) in any file the entry files reach through static relative imports and re-exports.
 type PackageCode = { exportText: string; usedNames: Set<string> };
@@ -406,6 +427,7 @@ function readPackageCode(cwd: string, packageName: string, version: string, impo
     exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith("."))
       ? (exportsField as Record<string, unknown>)
       : null;
+  const importsMap = manifest.imports && typeof manifest.imports === "object" ? (manifest.imports as Record<string, unknown>) : null;
   const resolve = (target: string, fromFile: string): string | null => {
     const resolved = resolveImport(target, fromFile, packageDir);
     return resolved && path.isAbsolute(resolved) ? resolved : null;
@@ -435,7 +457,7 @@ function readPackageCode(cwd: string, packageName: string, version: string, impo
 
   // Subpaths the app imports (lodash/template); one that cannot be followed leaves the symbol unconfirmed.
   for (const subpath of importedSubpaths) {
-    const files = (subpathMap ? stringLeaves(subpathMap[subpath]) : [subpath]).map(resolveEntry).filter((file): file is string => file !== null);
+    const files = (subpathMap ? mapTargets(subpathMap, subpath) : [subpath]).map(resolveEntry).filter((file): file is string => file !== null);
     if (files.length === 0) {
       return null;
     }
@@ -451,21 +473,37 @@ function readPackageCode(cwd: string, packageName: string, version: string, impo
     const module = parsed.get(file);
     const sources = [...(module?.imports ?? []).map((entry) => entry.source), ...(module?.exports ?? []).flatMap((entry) => entry.source ?? [])];
 
-    for (const source of sources.filter((entry) => entry.startsWith("."))) {
-      const target = resolve(source, file);
-      if (!target || parsed.has(target)) {
-        continue;
-      }
-
-      if (parsed.size >= MAX_PACKAGE_FILES) {
+    for (const source of sources) {
+      // The package importing itself by name is not followed, so the symbol stays unconfirmed.
+      if (source === packageName || source.startsWith(`${packageName}/`)) {
         return null;
       }
 
-      parse(target);
-      if (parsed.has(target)) {
-        queue.push(target);
-        if (entryFiles.has(file)) {
-          exportFiles.add(target);
+      // "#internal/x" resolves through package.json "imports"; one that cannot be followed leaves it unconfirmed.
+      const targets = source.startsWith("#")
+        ? mapTargets(importsMap, source).map(resolveEntry)
+        : source.startsWith(".")
+          ? [resolve(source, file)]
+          : [];
+      if (source.startsWith("#") && !targets.some((target) => target !== null)) {
+        return null;
+      }
+
+      for (const target of targets) {
+        if (!target || parsed.has(target)) {
+          continue;
+        }
+
+        if (parsed.size >= MAX_PACKAGE_FILES) {
+          return null;
+        }
+
+        parse(target);
+        if (parsed.has(target)) {
+          queue.push(target);
+          if (entryFiles.has(file)) {
+            exportFiles.add(target);
+          }
         }
       }
     }
