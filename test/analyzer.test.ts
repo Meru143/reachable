@@ -594,10 +594,14 @@ describe("analyzer", () => {
       .get("/v1/vulns/GHSA-gone")
       .reply(404, { code: 5, message: "Bug not found." });
 
-    expect(verdicts(await analyze({ cwd }))).toEqual([
+    const scan = await analyze({ cwd });
+
+    expect(verdicts(scan)).toEqual([
       ["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined],
       ["GHSA-gone", "trim", "UNKNOWN", "lookup-failed"],
     ]);
+    // The stale record may predate changes to the advisory.
+    expect(scan.unchecked).toEqual(["lodash@4.17.20"]);
   });
 
   it("never uses the id-only records 1.0.11 and earlier cached, fresh or stale", async () => {

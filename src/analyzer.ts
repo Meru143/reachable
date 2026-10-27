@@ -261,8 +261,8 @@ function cacheSettings(options: AnalyzeOptions): { cacheDir: string; ttlHours: n
 type Lookup = {
   advisories: Advisory[];
   degraded: Set<string>;
-  /** OSV could not say which advisories affect the package now: some are missing, or all come from an expired cache
-   * entry, which cannot hold the ones published since. */
+  /** OSV could not say what affects the package now: an advisory is missing, or comes from an expired cache entry,
+   * which cannot hold advisories published since, nor later changes to a record. */
   unchecked: boolean;
 };
 
@@ -320,7 +320,7 @@ async function advisoriesForPackage(packageName: string, packageVersion: string,
     }
 
     // Keep the records that arrived. A failed one comes from the stale cache when it has it, and is missing
-    // otherwise. A partial result is not cached, so the next run retries.
+    // otherwise; either way the package is not fully checked. A partial result is not cached, so the next run retries.
     const stale = options.noCache ? [] : getCachedRegardlessOfTtl(cacheKey, cacheDir) ?? [];
     const staleRecords = stale.filter((advisory) => failed.some((entry) => entry.id === advisory.id));
     logger.warn(
@@ -335,7 +335,7 @@ async function advisoriesForPackage(packageName: string, packageVersion: string,
     return {
       advisories: [...advisories, ...staleRecords],
       degraded: new Set(staleRecords.map((advisory) => advisory.id)),
-      unchecked: staleRecords.length < failed.length,
+      unchecked: true,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

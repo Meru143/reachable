@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("cli/index", () => {
+// Each test imports the whole CLI afresh (tree-sitter, the TypeScript resolver), which can take seconds on a cold run.
+describe("cli/index", { timeout: 30_000 }, () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
