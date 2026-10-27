@@ -1,3 +1,10 @@
+## [1.0.9](https://github.com/Meru143/reachable/compare/v1.0.8...v1.0.9) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** upgrade zod to 4.6.7 for GHSA-mrhx-c7xc-m3w5 ([#3](https://github.com/Meru143/reachable/issues/3)) ([1738054](https://github.com/Meru143/reachable/commit/173805431a7f17cb5ded23b08262c19dd9b43488))
+
 ## [1.0.8](https://github.com/Meru143/reachable/compare/v1.0.7...v1.0.8) (2026-04-04)
 
 
