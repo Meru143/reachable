@@ -1,3 +1,10 @@
+## [1.0.10](https://github.com/Meru143/reachable/compare/v1.0.9...v1.0.10) (2026-10-27)
+
+
+### Bug Fixes
+
+* **package:** point the npm homepage at the docs site ([#2](https://github.com/Meru143/reachable/issues/2)) ([37cad47](https://github.com/Meru143/reachable/commit/37cad47dfc9effba12431f2618408347f4190bf6))
+
 ## [1.0.9](https://github.com/Meru143/reachable/compare/v1.0.8...v1.0.9) (2026-10-27)
 
 
