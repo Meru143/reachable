@@ -12,7 +12,7 @@ import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCac
 import { fetchVulns, queryBatch } from "./vuln/osv.js";
 import { extractVulnSymbols } from "./vuln/symbols.js";
 import type { Advisory, InstalledPackage, ReachabilityResult, UnknownReason } from "./vuln/types.js";
-import { packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
+import { addInstalledPackage, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
 import { ReachableError } from "./utils/errors.js";
 
 export interface AnalyzeOptions {
@@ -115,7 +115,7 @@ function collectInstalledPackages(cwd: string): { installedPackages: InstalledPa
     foundLockfile = true;
 
     for (const installedPackage of parsePackageLock(packageDir)) {
-      installedPackages.set(`${installedPackage.name}@${installedPackage.version}`, installedPackage);
+      addInstalledPackage(installedPackages, installedPackage);
     }
 
     for (const name of packagesUsedByDependencies(packageDir)) {
@@ -354,15 +354,20 @@ function stringLeaves(value: unknown): string[] {
   return value && typeof value === "object" ? Object.values(value).flatMap(stringLeaves) : [];
 }
 
-type PackageCode = { text: string; calls: string[] };
+// exportText: the entry files and the files they import directly. calls: every file the entry files reach through
+// static relative imports and re-exports.
+type PackageCode = { exportText: string; calls: string[] };
 
-// The installed package's entry files and the files they import directly.
-// ponytail: deeper re-exports and internal callers are not followed, so a symbol defined further in stays
-// unconfirmed (UNKNOWN), never UNREACHABLE; follow the package's whole module graph to confirm more.
-function readPackageCode(cwd: string, packageName: string): PackageCode | null {
-  const packageDir = [cwd, ...workspaceDirectories(cwd)]
+// ponytail: a cap instead of streaming; a bigger package stays unconfirmed (UNKNOWN), never UNREACHABLE.
+const MAX_PACKAGE_FILES = 2000;
+
+// The installed copy the app loads (node_modules of the project or a workspace), preferring the given version.
+// Calls behind a dynamic require are not seen.
+function readPackageCode(cwd: string, packageName: string, version: string): PackageCode | null {
+  const packageDirs = [cwd, ...workspaceDirectories(cwd)]
     .map((directory) => path.join(directory, "node_modules", packageName))
-    .find((directory) => existsSync(path.join(directory, "package.json")));
+    .filter((directory) => existsSync(path.join(directory, "package.json")));
+  const packageDir = packageDirs.find((directory) => packageJsonAt(directory)?.version === version) ?? packageDirs[0];
   if (!packageDir) {
     return null;
   }
@@ -397,14 +402,36 @@ function readPackageCode(cwd: string, packageName: string): PackageCode | null {
     }
   }
 
-  for (const [file, module] of [...parsed]) {
-    for (const imported of module.imports.filter((entry) => entry.source.startsWith("."))) {
-      parse(resolve(imported.source, file));
+  const entryFiles = new Set(parsed.keys());
+  const exportFiles = new Set(entryFiles);
+  const queue = [...entryFiles];
+  while (queue.length > 0) {
+    const file = queue.shift() ?? "";
+    const module = parsed.get(file);
+    const sources = [...(module?.imports ?? []).map((entry) => entry.source), ...(module?.exports ?? []).flatMap((entry) => entry.source ?? [])];
+
+    for (const source of sources.filter((entry) => entry.startsWith("."))) {
+      const target = resolve(source, file);
+      if (!target || parsed.has(target)) {
+        continue;
+      }
+
+      if (parsed.size >= MAX_PACKAGE_FILES) {
+        return null;
+      }
+
+      parse(target);
+      if (parsed.has(target)) {
+        queue.push(target);
+        if (entryFiles.has(file)) {
+          exportFiles.add(target);
+        }
+      }
     }
   }
 
   return {
-    text: [...parsed.keys()].map((file) => readFileSync(file, "utf8")).join("\n"),
+    exportText: [...exportFiles].map((file) => readFileSync(file, "utf8")).join("\n"),
     calls: [...parsed.values()].flatMap((module) => module.calls.map((call) => call.callee)),
   };
 }
@@ -424,6 +451,17 @@ function exportsSymbol(text: string, symbol: string): boolean {
   ].some((pattern) => new RegExp(pattern).test(text));
 }
 
+// Local names an export is bound to (exports.template = compile, export { compile as template }, e.template=t in
+// minified code): the package's internal calls use those names.
+function exportedLocalNames(text: string, symbol: string): string[] {
+  const name = String.raw`(?<![\w$])${escapeRegExp(symbol)}(?![\w$])`;
+  return [
+    String.raw`\.${name}\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n]`,
+    String.raw`${name}\s*:\s*([A-Za-z_$][\w$]*)\s*[,}\n]`,
+    String.raw`([A-Za-z_$][\w$]*)\s+as\s+${name}`,
+  ].flatMap((pattern) => [...text.matchAll(new RegExp(pattern, "g"))].map((match) => match[1]));
+}
+
 type Verdict = Omit<ReachabilityResult, "advisory">;
 
 // The app's own files are the only code in the graph: a verdict about dependency code is never UNREACHABLE.
@@ -434,13 +472,19 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
   const unknown = (reason: UnknownReason): Verdict => ({ status: "UNKNOWN", callPath: null, reason });
 
   // The package exports the symbol and none of its own code calls it, so only the app's calls can reach it.
-  const isEntryPointOfPackage = (packageName: string, symbol: string): boolean => {
-    if (!packageCode.has(packageName)) {
-      packageCode.set(packageName, readPackageCode(cwd, packageName));
+  const isEntryPointOfPackage = ({ name, version }: InstalledPackage, symbol: string): boolean => {
+    const key = `${name}@${version}`;
+    if (!packageCode.has(key)) {
+      packageCode.set(key, readPackageCode(cwd, name, version));
     }
 
-    const code = packageCode.get(packageName);
-    return Boolean(code && exportsSymbol(code.text, symbol) && !code.calls.some((callee) => matchesSymbol(callee, symbol)));
+    const code = packageCode.get(key);
+    if (!code || !exportsSymbol(code.exportText, symbol)) {
+      return false;
+    }
+
+    const localNames = [symbol, ...exportedLocalNames(code.exportText, symbol)];
+    return !code.calls.some((callee) => localNames.some((localName) => matchesSymbol(callee, localName)));
   };
 
   // Aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from the graph.
@@ -453,12 +497,17 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
     return reachableSources.some((source) => pattern.test(source));
   };
 
-  return (packageName: string, symbol: string | null, confident: boolean, degraded: boolean): Verdict => {
+  return (installed: InstalledPackage, symbol: string | null, confident: boolean, degraded: boolean): Verdict => {
     if (degraded) {
       return unknown("lookup-failed");
     }
 
-    const packageNodeId = `pkg:${packageName}::module`;
+    // The app's imports load the hoisted copy; a copy nested under another package is loaded only by that package.
+    if (installed.nested) {
+      return unknown("transitive");
+    }
+
+    const packageNodeId = `pkg:${installed.name}::module`;
     if (!graph.nodes.has(packageNodeId)) {
       return unknown("not-imported");
     }
@@ -472,11 +521,11 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
       return { status: "REACHABLE", callPath };
     }
 
-    if (usedByDependencies.has(packageName)) {
+    if (usedByDependencies.has(installed.name)) {
       return unknown("transitive");
     }
 
-    if (!confident || !isEntryPointOfPackage(packageName, symbol)) {
+    if (!confident || !isEntryPointOfPackage(installed, symbol)) {
       return unknown("symbol-unconfirmed");
     }
 
@@ -533,7 +582,7 @@ export async function analyze(options: AnalyzeOptions): Promise<ReachabilityResu
 
         results.push({
           advisory: vulnSymbol,
-          ...verdict(installedPackage.name, vulnSymbol.exportedSymbol, confident, degradedToUnknown),
+          ...verdict(installedPackage, vulnSymbol.exportedSymbol, confident, degradedToUnknown),
         });
       }
     }

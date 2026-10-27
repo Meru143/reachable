@@ -51,8 +51,8 @@ describe("utils/packagelock", () => {
     );
 
     expect(parsePackageLock(cwd)).toEqual([
-      { name: "lodash", version: "4.17.20", ecosystem: "npm", dev: false },
-      { name: "@scope/pkg", version: "1.2.3", ecosystem: "npm", dev: false },
+      { name: "lodash", version: "4.17.20", ecosystem: "npm", dev: false, nested: false },
+      { name: "@scope/pkg", version: "1.2.3", ecosystem: "npm", dev: false, nested: false },
     ]);
   });
 
@@ -81,8 +81,8 @@ describe("utils/packagelock", () => {
     );
 
     expect(parsePackageLock(cwd)).toEqual([
-      { name: "express", version: "4.18.2", ecosystem: "npm", dev: false },
-      { name: "qs", version: "6.11.0", ecosystem: "npm", dev: false },
+      { name: "express", version: "4.18.2", ecosystem: "npm", dev: false, nested: false },
+      { name: "qs", version: "6.11.0", ecosystem: "npm", dev: false, nested: true },
     ]);
   });
 
@@ -123,7 +123,7 @@ describe("utils/packagelock", () => {
       "utf8",
     );
 
-    expect(parsePackageLock(cwd)).toEqual([{ name: "lodash", version: "4.17.20", ecosystem: "npm", dev: false }]);
+    expect(parsePackageLock(cwd)).toEqual([{ name: "lodash", version: "4.17.20", ecosystem: "npm", dev: false, nested: false }]);
   });
 
   it("falls back to node_modules/.package-lock.json when present", () => {
@@ -150,10 +150,10 @@ describe("utils/packagelock", () => {
       "utf8",
     );
 
-    expect(parsePackageLock(cwd)).toEqual([{ name: "minimist", version: "1.2.5", ecosystem: "npm", dev: false }]);
+    expect(parsePackageLock(cwd)).toEqual([{ name: "minimist", version: "1.2.5", ecosystem: "npm", dev: false, nested: false }]);
   });
 
-  it("keeps every installed version of a package", () => {
+  it("keeps every installed version of a package and marks nested copies", () => {
     const cwd = makeTempDir();
     writeFileSync(
       path.join(cwd, "package-lock.json"),
@@ -168,7 +168,29 @@ describe("utils/packagelock", () => {
       "utf8",
     );
 
-    expect(parsePackageLock(cwd).map((entry) => `${entry.name}@${entry.version}`)).toEqual(["lodash@4.17.20", "lodash@4.18.1"]);
+    expect(parsePackageLock(cwd).map((entry) => [`${entry.name}@${entry.version}`, entry.nested])).toEqual([
+      ["lodash@4.17.20", true],
+      ["lodash@4.18.1", false],
+    ]);
+  });
+
+  it("counts a version installed both hoisted and nested as hoisted", () => {
+    const cwd = makeTempDir();
+    writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          "": { name: "fixture" },
+          "node_modules/a/node_modules/lodash": { version: "4.17.20" },
+          "node_modules/lodash": { version: "4.17.20" },
+          "node_modules/z/node_modules/lodash": { version: "4.17.20" },
+        },
+      }),
+      "utf8",
+    );
+
+    expect(parsePackageLock(cwd)).toEqual([{ name: "lodash", version: "4.17.20", ecosystem: "npm", dev: false, nested: false }]);
   });
 
   it("lists what installed packages depend on, leaving out the app and dev-only packages", () => {

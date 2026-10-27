@@ -106,7 +106,7 @@ reachable graph src/index.ts
 For each installed package (every version in the lockfile, dev dependencies excluded), `reachable` asks OSV which advisories affect it, fetches each advisory's full record, and keeps the entries for that package only. It takes the vulnerable functions from the advisory's wording ("via the template function", "the `toNumber`, `trim` and `trimEnd` functions", "`_.template`", "`foo()`"), one row per function. It never takes the package's own name as a function.
 
 - `REACHABLE`: a file that imports the package calls the function by name (`_.template(...)`, `template(...)`), and that file is on an import path from an entry point. The call path is the evidence.
-- `UNREACHABLE`: only when all of these hold: your code imports the package and no other installed package depends on it; the advisory names the function plainly (not only as a call such as `setKey()`); the installed package exports the function from its entry files and does not call it itself; no file reachable from an entry point mentions the name; and no call path exists.
+- `UNREACHABLE`: only when all of these hold: your code imports the package, this is the copy it loads (not one nested under another package), and no other installed package depends on it; the advisory names the function plainly (not only as a call such as `setKey()`); the installed package exports the function from its entry files and does not call it itself; no file reachable from an entry point mentions the name; and no call path exists.
 - `UNKNOWN`: everything else. The JSON output carries a `reason`, and the table and markdown show it:
 
 | Reason | Meaning |
@@ -114,13 +114,13 @@ For each installed package (every version in the lockfile, dev dependencies excl
 | `lookup-failed` | The OSV lookup failed; the verdict comes from an expired cache entry. |
 | `not-imported` | Your code never imports the package. It is installed for other dependencies, whose code is not analyzed. |
 | `symbol-unknown` | The advisory does not name a vulnerable function. |
-| `transitive` | Your code imports the package without reaching the function, but other installed packages depend on it and may. |
+| `transitive` | Other installed packages depend on the package and may reach the function. Either your code imports the package without reaching the function, or this copy is nested under another package (`node_modules/a/node_modules/b`) and only that package loads it. |
 | `symbol-unconfirmed` | The named function is not confirmed as an entry point of the package: it is named only as a call, the package's entry files do not export it, or the package calls it itself. |
 | `unresolved-reference` | The name appears in reachable code outside a call the graph resolves, such as a renamed import, a callback (`.map(_.template)`) or a re-export. |
 
 ## Limitations
 
-- Dependencies' own code is not analyzed. An advisory that only dependency code could reach is `UNKNOWN`, never `UNREACHABLE`. This includes the vulnerable package itself beyond its entry files and the files they import directly: an internal call deeper in the package is not seen.
+- Dependencies' own code is not analyzed. An advisory that only dependency code could reach is `UNKNOWN`, never `UNREACHABLE`. The vulnerable package itself is read only to confirm that its entry files export the function and that none of the files they reach through static imports call it. Calls behind a dynamic `require` are not seen, and a package of more than 2,000 files is not read, so its functions stay `UNKNOWN`.
 - Calls are matched by name: any `x.template(...)` in a file that imports lodash counts as a call to `template`. This errs towards `REACHABLE`.
 - Only code reachable from the entry points counts. Pass `--entry` for scripts, workers and anything `package.json` does not name.
 - In TypeScript files only `import` statements are read; a package loaded there with `require` looks not imported (`UNKNOWN`).
@@ -134,7 +134,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 - `UNREACHABLE` follows the rules above, and `UNKNOWN` results carry a `reason`.
 - Every function an advisory names gets its own row, and the package's own name is never used as one.
 - Source files of 32 KB or more are analyzed; they used to be skipped.
-- Every installed version of a package is checked, not only one per name.
+- Every installed version of a package is checked, not only one per name. A copy nested under another package is `UNKNOWN` (`transitive`), because only that package loads it.
 - Logs go to stderr, so `--format json` and `--format sarif` output stays valid when a warning is logged.
 
 ## Configuration

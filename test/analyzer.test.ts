@@ -101,8 +101,9 @@ const installedLodash = [
   "module.exports = lodash;",
 ].join("\n");
 
-// An app whose only file is index.js, with lodash@4.17.20 installed; `packages` adds lockfile entries.
-function lodashApp(source: string, packages: Record<string, object> = {}, installLodash = true): string {
+// An app whose only file is index.js, with lodash@4.17.20 installed (its code, or not installed when null);
+// `packages` adds lockfile entries.
+function lodashApp(source: string, packages: Record<string, object> = {}, lodashCode: string | null = installedLodash): string {
   const cwd = makeTempDir();
   writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", private: true, main: "index.js", dependencies: { lodash: "4.17.20" } }));
   writeProjectFile(
@@ -117,9 +118,9 @@ function lodashApp(source: string, packages: Record<string, object> = {}, instal
       },
     }),
   );
-  if (installLodash) {
+  if (lodashCode !== null) {
     writeProjectFile(cwd, path.join("node_modules", "lodash", "package.json"), JSON.stringify({ name: "lodash", version: "4.17.20", main: "lodash.js" }));
-    writeProjectFile(cwd, path.join("node_modules", "lodash", "lodash.js"), installedLodash);
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lodash.js"), lodashCode);
   }
   writeProjectFile(cwd, "index.js", source);
   return cwd;
@@ -306,6 +307,32 @@ describe("analyzer", () => {
     expect(verdicts(reached)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
   });
 
+  it("reports UNKNOWN (transitive), never the app's call path, for a copy nested under another package", async () => {
+    mockOsv({ "lodash@4.17.20": [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n', {
+      "node_modules/lodash": { version: "4.18.1" },
+      "node_modules/old-lib": { version: "1.0.0", dependencies: { lodash: "4.17.20" } },
+      "node_modules/old-lib/node_modules/lodash": { version: "4.17.20" },
+    });
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "transitive"]]);
+  });
+
+  it("finds the package's own calls in any file its entry reaches through static imports", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp(
+      'const _ = require("lodash");\n_.map([1], String);\n',
+      {},
+      'exports.template = require("./lib/template");\nexports.render = require("./lib/core").render;\n',
+    );
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lib", "template.js"), "module.exports = function template(source) { return source; };\n");
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lib", "core.js"), 'exports.render = require("./pipeline");\n');
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lib", "pipeline.js"), 'module.exports = require("./render");\n');
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lib", "render.js"), 'const template = require("./template");\nmodule.exports = (source) => template(source);\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
+
   it("does not count dev-only dependents", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {
@@ -326,7 +353,7 @@ describe("analyzer", () => {
     const source = 'const _ = require("lodash");\n_.map([1], String);\n';
 
     const installed = await analyze({ cwd: lodashApp(source) });
-    const notInstalled = await analyze({ cwd: lodashApp(source, {}, false) });
+    const notInstalled = await analyze({ cwd: lodashApp(source, {}, null) });
 
     expect(verdicts(installed)).toEqual([
       ["GHSA-calls-itself", "toNumber", "UNKNOWN", "symbol-unconfirmed"],
@@ -338,6 +365,17 @@ describe("analyzer", () => {
       ["UNKNOWN", "symbol-unconfirmed"],
       ["UNKNOWN", "symbol-unconfirmed"],
     ]);
+  });
+
+  it.each([
+    ["minified code", "function c(s){return s}function d(s){return c(s)}exports.template=c,exports.render=d;"],
+    ["an ES export list", "function compile(s) { return s; }\nexport function render(s) { return compile(s); }\nexport { compile as template };\n"],
+  ])("counts calls to the local name an export is bound to, in %s", async (_label, lodashCode) => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, lodashCode) });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
   });
 
   it("still reports REACHABLE for a symbol it could not confirm when the app calls it", async () => {

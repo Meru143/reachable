@@ -71,15 +71,16 @@ function shouldIncludePackage(name: string, isDevPackage: boolean, config: Reach
   return !isDevPackage;
 }
 
+// "node_modules/foo" -> foo, "node_modules/a/node_modules/@s/b" -> @s/b; null for the root and folders.
 function packageNameFromPathKey(key: string): string | null {
   const normalized = key.replace(/\\/g, "/");
-  const marker = "/node_modules/";
+  const marker = "node_modules/";
+  const lastMarkerIndex = normalized.lastIndexOf(marker);
 
-  if (!normalized.includes("node_modules/")) {
+  if (lastMarkerIndex === -1) {
     return null;
   }
 
-  const lastMarkerIndex = normalized.lastIndexOf(marker);
   const tail = normalized.slice(lastMarkerIndex + marker.length);
   if (tail.startsWith("@")) {
     return tail.split("/").slice(0, 2).join("/");
@@ -88,8 +89,14 @@ function packageNameFromPathKey(key: string): string | null {
   return tail.split("/")[0] ?? null;
 }
 
-// Keyed by name@version: a nested copy (node_modules/a/node_modules/lodash@4.17.20) must not be dropped in
-// favour of the hoisted one.
+// Keyed by name@version, so a nested copy (node_modules/a/node_modules/lodash@4.17.20) is not dropped in favour of
+// the hoisted one. A version installed both hoisted and nested counts as hoisted: the app can load it.
+export function addInstalledPackage(packages: Map<string, InstalledPackage>, installed: InstalledPackage): void {
+  const key = `${installed.name}@${installed.version}`;
+  const existing = packages.get(key);
+  packages.set(key, existing && !existing.nested ? existing : installed);
+}
+
 function parseV3(lockfile: PackageLockV3, config: ReachableConfig): InstalledPackage[] {
   const packages = new Map<string, InstalledPackage>();
 
@@ -103,11 +110,12 @@ function parseV3(lockfile: PackageLockV3, config: ReachableConfig): InstalledPac
       continue;
     }
 
-    packages.set(`${name}@${value.version}`, {
+    addInstalledPackage(packages, {
       name,
       version: value.version,
       ecosystem: "npm",
       dev: Boolean(value.dev),
+      nested: packageKey.split("node_modules/").length > 2,
     });
   }
 
@@ -116,26 +124,28 @@ function parseV3(lockfile: PackageLockV3, config: ReachableConfig): InstalledPac
 
 function walkV2Dependencies(
   dependencies: Record<string, PackageLockV2Node>,
-  visit: (name: string, node: PackageLockV2Node) => void,
+  visit: (name: string, node: PackageLockV2Node, depth: number) => void,
+  depth = 0,
 ): void {
   for (const [name, node] of Object.entries(dependencies)) {
-    visit(name, node);
+    visit(name, node, depth);
 
     if (node.dependencies) {
-      walkV2Dependencies(node.dependencies, visit);
+      walkV2Dependencies(node.dependencies, visit, depth + 1);
     }
   }
 }
 
 function parseV2(lockfile: PackageLockV2, config: ReachableConfig): InstalledPackage[] {
   const packages = new Map<string, InstalledPackage>();
-  walkV2Dependencies(lockfile.dependencies ?? {}, (name, node) => {
+  walkV2Dependencies(lockfile.dependencies ?? {}, (name, node, depth) => {
     if (node.version && shouldIncludePackage(name, Boolean(node.dev), config)) {
-      packages.set(`${name}@${node.version}`, {
+      addInstalledPackage(packages, {
         name,
         version: node.version,
         ecosystem: "npm",
         dev: Boolean(node.dev),
+        nested: depth > 0,
       });
     }
   });

@@ -14,7 +14,10 @@ export function readFixture(...segments: string[]): string {
   return readFileSync(fixturePath(...segments), "utf8");
 }
 
-/** Mocks OSV like the real API: the batch query returns only ids, GET /v1/vulns/{id} returns the full record. */
+/**
+ * Mocks OSV like the real API: the batch query returns only ids, GET /v1/vulns/{id} returns the full record.
+ * Keys are package names, or name@version for one version only.
+ */
 export function mockOsv(advisoriesByPackage: Record<string, Advisory[]>) {
   const records = new Map(Object.values(advisoriesByPackage).flat().map((advisory) => [advisory.id, advisory]));
 
@@ -23,12 +26,13 @@ export function mockOsv(advisoriesByPackage: Record<string, Advisory[]>) {
     .post("/v1/querybatch")
     .reply(200, (_uri, requestBody) => {
       const payload = (typeof requestBody === "string" ? JSON.parse(requestBody) : requestBody) as {
-        queries?: Array<{ package?: { name?: string } }>;
+        queries?: Array<{ package?: { name?: string }; version?: string }>;
       };
       const packageName = payload.queries?.[0]?.package?.name ?? "";
+      const advisories = advisoriesByPackage[`${packageName}@${payload.queries?.[0]?.version}`] ?? advisoriesByPackage[packageName] ?? [];
 
       return {
-        results: [{ vulns: (advisoriesByPackage[packageName] ?? []).map(({ id }) => ({ id, modified: "2026-10-01T00:00:00Z" })) }],
+        results: [{ vulns: advisories.map(({ id }) => ({ id, modified: "2026-10-01T00:00:00Z" })) }],
       };
     })
     .get(/^\/v1\/vulns\//)

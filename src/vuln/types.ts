@@ -44,6 +44,8 @@ export interface InstalledPackage {
   version: string;
   ecosystem: string;
   dev?: boolean;
+  /** Installed under another package (node_modules/a/node_modules/b): only that package's code loads this copy. */
+  nested?: boolean;
 }
 
 export interface VulnSymbol {
