@@ -1,3 +1,10 @@
+## [1.0.12](https://github.com/Meru143/reachable/compare/v1.0.11...v1.0.12) (2026-10-27)
+
+
+### Bug Fixes
+
+* **scan:** fetch full OSV records and stop false UNREACHABLE verdicts ([#10](https://github.com/Meru143/reachable/issues/10)) ([cb260ca](https://github.com/Meru143/reachable/commit/cb260ca0f1a34ae5d01b2c3d163a116366975db0))
+
 ## [1.0.11](https://github.com/Meru143/reachable/compare/v1.0.10...v1.0.11) (2026-10-27)
 
 
