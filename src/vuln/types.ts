@@ -27,6 +27,7 @@ export interface AdvisorySeverity {
 export interface Advisory {
   id: string;
   aliases?: string[];
+  summary?: string;
   details?: string;
   severity?: AdvisorySeverity[];
   affected?: AdvisoryAffected[];
@@ -54,8 +55,19 @@ export interface VulnSymbol {
   affectedVersionRange: string;
 }
 
+/** Why a result is UNKNOWN; the README's Limitations section explains each one. */
+export type UnknownReason =
+  | "lookup-failed"
+  | "not-imported"
+  | "symbol-unknown"
+  | "transitive"
+  | "symbol-unconfirmed"
+  | "unresolved-reference";
+
 export interface ReachabilityResult {
   advisory: VulnSymbol;
   status: "REACHABLE" | "UNREACHABLE" | "UNKNOWN";
   callPath: string[] | null;
+  /** Set on UNKNOWN results only. */
+  reason?: UnknownReason;
 }

@@ -2,29 +2,8 @@ import nock from "nock";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { analyze } from "../../src/analyzer.js";
-import { fixturePath } from "../helpers.js";
+import { fixturePath, mockOsv } from "../helpers.js";
 import type { Advisory } from "../../src/vuln/types.js";
-
-function mockOsv(advisoriesByPackage: Record<string, Advisory[]>) {
-  return nock("https://api.osv.dev")
-    .persist()
-    .post("/v1/querybatch")
-    .reply(200, (_uri, requestBody) => {
-      const payload =
-        typeof requestBody === "string"
-          ? (JSON.parse(requestBody) as { queries?: Array<{ package?: { name?: string } }> })
-          : (requestBody as { queries?: Array<{ package?: { name?: string } }> });
-      const packageName = payload.queries?.[0]?.package?.name ?? "";
-
-      return {
-        results: [
-          {
-            vulns: advisoriesByPackage[packageName] ?? [],
-          },
-        ],
-      };
-    });
-}
 
 function advisoryFor(packageName: string, symbol: string, ghsaId: string): Advisory {
   return {
@@ -106,13 +85,13 @@ describe("integration/reachable", () => {
       cwd: fixturePath("monorepo"),
       noCache: true,
     });
-    const reachablePackages = results
-      .filter((result) => result.status === "REACHABLE")
-      .map((result) => result.advisory.package)
-      .sort();
+    const lodash = results.find((result) => result.advisory.package === "lodash");
+    const minimist = results.find((result) => result.advisory.package === "minimist");
 
-    expect(reachablePackages).toEqual(["lodash", "minimist"]);
-    expect(results.some((result) => result.callPath?.[0] === "packages/pkg-a/src/index.ts::module")).toBe(true);
-    expect(results.some((result) => result.callPath?.[0] === "packages/pkg-b/src/index.ts::module")).toBe(true);
+    expect(lodash?.status).toBe("REACHABLE");
+    expect(lodash?.callPath?.[0]).toBe("packages/pkg-a/src/index.ts::module");
+    // pkg-b's import is seen (not "not-imported"); the advisory names only the package itself, whose default
+    // export can be bound to any name, so no symbol can be matched.
+    expect([minimist?.status, minimist?.reason, minimist?.advisory.exportedSymbol]).toEqual(["UNKNOWN", "symbol-unknown", null]);
   });
 });

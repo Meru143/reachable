@@ -92,8 +92,9 @@ next step:
             <h2>Cut false positives without pretending static analysis is magic.</h2>
             <p>
               reachable makes the uncertainty visible. When the tool can prove a path, it says
-              REACHABLE. When it cannot find one, it says UNREACHABLE. When resolution or dynamic
-              behavior leaves a gap, it says UNKNOWN instead of bluffing.
+              REACHABLE. When it finds none and nothing else could reach the symbol, it says
+              UNREACHABLE. When dependency code, resolution or dynamic behavior leaves a gap, it
+              says UNKNOWN instead of bluffing.
             </p>
           </div>
 
@@ -104,7 +105,7 @@ next step:
             </article>
             <article class="card">
               <h3>UNKNOWN</h3>
-              <p>Resolution hit a boundary or dynamic pattern that needs a closer look. It is a triage queue, not a hidden error.</p>
+              <p>A dependency may call it, the advisory does not name the function, or resolution hit a dynamic pattern. Each one says why. It is a triage queue, not a hidden error.</p>
             </article>
             <article class="card">
               <h3>UNREACHABLE</h3>

@@ -40,7 +40,9 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
   if (unknown.length > 0) {
     lines.push("## Unknown");
     for (const result of unknown) {
-      lines.push(`- **${result.advisory.package}** ${linkGhsa(result.advisory.ghsaId)} could not be confirmed as reachable or unreachable.`);
+      const symbol = result.advisory.exportedSymbol ? ` via \`${result.advisory.exportedSymbol}\`` : "";
+      const reason = result.reason ? ` (${result.reason})` : "";
+      lines.push(`- **${result.advisory.package}** ${linkGhsa(result.advisory.ghsaId)}${symbol} could not be confirmed as reachable or unreachable${reason}.`);
     }
     lines.push("");
   }

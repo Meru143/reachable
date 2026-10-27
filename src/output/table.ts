@@ -59,6 +59,15 @@ export function formatTable(results: ReachabilityResult[]): string {
           },
         ]);
       }
+
+      if (row.reason) {
+        table.push([
+          {
+            colSpan: 5,
+            content: chalk.dim(`Reason: ${row.reason}`),
+          },
+        ]);
+      }
     }
 
     blocks.push(`${color(status)}\n${table.toString()}`);

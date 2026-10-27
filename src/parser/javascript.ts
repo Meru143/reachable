@@ -30,6 +30,12 @@ function lineOf(node: Parser.SyntaxNode): number {
   return node.startPosition.row + 1;
 }
 
+// tree-sitter 0.21 throws "Invalid argument" when a string is not shorter than bufferSize (default 32768),
+// so files of 32 KB or more were skipped and their imports and calls went missing from the graph.
+export function parseSource(parser: Parser, sourceText: string): Parser.Tree {
+  return parser.parse(sourceText, undefined, { bufferSize: sourceText.length + 1 });
+}
+
 function captureNodes(language: unknown, tree: Parser.Tree, querySource: string): Parser.QueryCapture[] {
   const query = new Parser.Query(language, querySource);
   return query.captures(tree.rootNode);
@@ -212,8 +218,7 @@ export function extractExportsWithLanguage(tree: Parser.Tree, language: unknown)
 }
 
 export function parseJavaScriptFile(filePath: string): ParsedModule {
-  const sourceText = readFileSync(filePath, "utf8");
-  const tree = parser.parse(sourceText);
+  const tree = parseSource(parser, readFileSync(filePath, "utf8"));
 
   return {
     file: filePath,

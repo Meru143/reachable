@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,8 +13,8 @@ import {
 } from "../src/analyzer.js";
 import { ReachableError } from "../src/utils/errors.js";
 import { createCacheKey } from "../src/vuln/cache.js";
-import { fixturePath } from "./helpers.js";
-import type { Advisory } from "../src/vuln/types.js";
+import { fixturePath, mockOsv } from "./helpers.js";
+import type { Advisory, AdvisoryAffected } from "../src/vuln/types.js";
 
 const createdDirs: string[] = [];
 
@@ -28,27 +29,6 @@ function writeProjectFile(rootDir: string, relativePath: string, content: string
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, content, "utf8");
   return filePath;
-}
-
-function mockOsv(advisoriesByPackage: Record<string, Advisory[]>) {
-  return nock("https://api.osv.dev")
-    .persist()
-    .post("/v1/querybatch")
-    .reply(200, (_uri, requestBody) => {
-      const payload =
-        typeof requestBody === "string"
-          ? (JSON.parse(requestBody) as { queries?: Array<{ package?: { name?: string } }> })
-          : (requestBody as { queries?: Array<{ package?: { name?: string } }> });
-      const packageName = payload.queries?.[0]?.package?.name ?? "";
-
-      return {
-        results: [
-          {
-            vulns: advisoriesByPackage[packageName] ?? [],
-          },
-        ],
-      };
-    });
 }
 
 function advisoryFor(packageName: string, symbol: string | null, ghsaId: string): Advisory {
@@ -80,6 +60,73 @@ function advisoryFor(packageName: string, symbol: string | null, ghsaId: string)
       },
     ],
   };
+}
+
+// Shaped like the records GET /v1/vulns/{id} returns for npm: no structured symbols, only the advisory text, and
+// sibling packages in `affected`.
+function textAdvisory(id: string, details: string, severity = "HIGH"): Advisory {
+  return {
+    id,
+    details,
+    database_specific: { severity },
+    affected: ["lodash", "lodash-es"].map((name): AdvisoryAffected => ({
+      package: { name, ecosystem: "npm" },
+      ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }],
+    })),
+  };
+}
+
+const templateAdvisory = textAdvisory(
+  "GHSA-35jh-r3h4-6jhm",
+  "`lodash` versions prior to 4.17.21 are vulnerable to Command Injection via the template function.",
+);
+
+// A stand-in for the installed lodash: what it exports, and which of its functions it calls itself.
+const installedLodash = [
+  "function template(source) { return function render() { return source; }; }",
+  "function trim(value) { return String(value).replace(/^ +| +$/g, ''); }",
+  "function toNumber(value) { return +value; }",
+  "function clamp(number, lower, upper) { return Math.min(Math.max(toNumber(number), lower), upper); }",
+  "function baseSet(object, key, value) { object[key] = value; return object; }",
+  "function setKey(object, key) { return baseSet(object, key, true); }",
+  "function compileTemplate(source) { return source; }",
+  "function map(array, iteratee) { var result = []; for (var index = 0; index < array.length; index++) result.push(iteratee(array[index])); return result; }",
+  "var lodash = {};",
+  "lodash.template = template;",
+  "lodash.trim = trim;",
+  "lodash.toNumber = toNumber;",
+  "lodash.clamp = clamp;",
+  "lodash.setKey = setKey;",
+  "lodash.map = map;",
+  "module.exports = lodash;",
+].join("\n");
+
+// An app whose only file is index.js, with lodash@4.17.20 installed; `packages` adds lockfile entries.
+function lodashApp(source: string, packages: Record<string, object> = {}, installLodash = true): string {
+  const cwd = makeTempDir();
+  writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", private: true, main: "index.js", dependencies: { lodash: "4.17.20" } }));
+  writeProjectFile(
+    cwd,
+    "package-lock.json",
+    JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "app", dependencies: { lodash: "4.17.20" } },
+        "node_modules/lodash": { version: "4.17.20" },
+        ...packages,
+      },
+    }),
+  );
+  if (installLodash) {
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "package.json"), JSON.stringify({ name: "lodash", version: "4.17.20", main: "lodash.js" }));
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "lodash.js"), installedLodash);
+  }
+  writeProjectFile(cwd, "index.js", source);
+  return cwd;
+}
+
+function verdicts(results: Awaited<ReturnType<typeof analyze>>): Array<[string, string | null, string, string | undefined]> {
+  return results.map((result) => [result.advisory.ghsaId, result.advisory.exportedSymbol, result.status, result.reason]);
 }
 
 beforeAll(() => {
@@ -173,6 +220,7 @@ describe("analyzer", () => {
     expect(collectSourceFiles(cwd)).toEqual([keptFile]);
   });
 
+
   it("reports reachable and unknown advisories in sorted order", async () => {
     mockOsv({
       lodash: [
@@ -186,22 +234,146 @@ describe("analyzer", () => {
       noCache: true,
     });
 
-    expect(results.map((result) => result.status)).toEqual(["REACHABLE", "UNKNOWN"]);
+    expect(results.map((result) => [result.status, result.reason])).toEqual([
+      ["REACHABLE", undefined],
+      ["UNKNOWN", "symbol-unknown"],
+    ]);
     expect(results[0]?.callPath?.length ?? 0).toBeGreaterThan(0);
   });
 
-  it("reports unreachable results when only safe symbols are used", async () => {
+  it("hydrates each advisory and reports it for the installed package only", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\nconsole.log(_.template("x"));\n') });
+
+    expect(results).toEqual([
+      {
+        advisory: {
+          package: "lodash",
+          ghsaId: "GHSA-35jh-r3h4-6jhm",
+          cvssScore: 7,
+          severity: "HIGH",
+          exportedSymbol: "template",
+          affectedVersionRange: "introduced:0 -> fixed:4.17.21",
+        },
+        status: "REACHABLE",
+        callPath: ["index.js::module", "index.js::call:_.template:2"],
+      },
+    ]);
+  });
+
+  it("caches the full records and reuses them for a dry run", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconsole.log(_.map([1], String));\n');
+
+    const fresh = await analyze({ cwd });
+    nock.cleanAll();
+    const cached = await analyze({ cwd, dryRun: true });
+    const [cacheFile] = readdirSync(path.join(cwd, ".reachable-cache"));
+    const record = JSON.parse(readFileSync(path.join(cwd, ".reachable-cache", cacheFile ?? ""), "utf8")) as { advisories: Advisory[] };
+
+    expect(cached).toEqual(fresh);
+    expect(record.advisories[0]?.affected?.[0]?.package?.name).toBe("lodash");
+  });
+
+  it("reports UNREACHABLE when the app is the only importer and never calls the exported symbol", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\nconsole.log(_.map([1, 2], (n) => n * 2));\n') });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("reports UNKNOWN (not-imported) for a package only other dependencies use", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const async = require("async");\nasync.series([]);\n', {
+      "node_modules/async": { version: "2.6.4", dependencies: { lodash: "^4.17.14" } },
+    });
+
+    const results = await analyze({ cwd });
+
+    expect(verdicts(results)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "not-imported"]]);
+  });
+
+  it("reports UNKNOWN (transitive) when other installed packages also depend on it, REACHABLE when the app calls it", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const dependents = { "node_modules/async": { version: "2.6.4", dependencies: { lodash: "^4.17.14" } } };
+
+    const unreached = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.map([1], String);\n', dependents) });
+    const reached = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.template("x");\n', dependents) });
+
+    expect(verdicts(unreached)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "transitive"]]);
+    expect(verdicts(reached)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+  });
+
+  it("does not count dev-only dependents", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {
+      "node_modules/eslint-plugin-lodash": { version: "7.4.0", dev: true, dependencies: { lodash: "^4.17.21" } },
+    });
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("reports UNKNOWN (symbol-unconfirmed) unless the installed package exports the symbol and never calls it itself", async () => {
     mockOsv({
-      lodash: [advisoryFor("lodash", "trim", "GHSA-unreachable-symbol")],
+      lodash: [
+        textAdvisory("GHSA-calls-itself", "ReDoS via the `toNumber` function."),
+        textAdvisory("GHSA-not-exported", "Code injection via the compileTemplate function."),
+        textAdvisory("GHSA-named-as-a-call", "Prototype Pollution via file `index.js`, function `setKey()` (lines 69-95)."),
+      ],
     });
+    const source = 'const _ = require("lodash");\n_.map([1], String);\n';
 
-    const results = await analyze({
-      cwd: fixturePath("safe-usage"),
-      noCache: true,
-    });
+    const installed = await analyze({ cwd: lodashApp(source) });
+    const notInstalled = await analyze({ cwd: lodashApp(source, {}, false) });
 
-    expect(results).toHaveLength(1);
-    expect(results[0]?.status).toBe("UNREACHABLE");
+    expect(verdicts(installed)).toEqual([
+      ["GHSA-calls-itself", "toNumber", "UNKNOWN", "symbol-unconfirmed"],
+      ["GHSA-not-exported", "compileTemplate", "UNKNOWN", "symbol-unconfirmed"],
+      ["GHSA-named-as-a-call", "setKey", "UNKNOWN", "symbol-unconfirmed"],
+    ]);
+    expect(verdicts(notInstalled).map(([, , status, reason]) => [status, reason])).toEqual([
+      ["UNKNOWN", "symbol-unconfirmed"],
+      ["UNKNOWN", "symbol-unconfirmed"],
+      ["UNKNOWN", "symbol-unconfirmed"],
+    ]);
+  });
+
+  it("still reports REACHABLE for a symbol it could not confirm when the app calls it", async () => {
+    mockOsv({ lodash: [textAdvisory("GHSA-named-as-a-call", "Prototype Pollution via file `index.js`, function `setKey()`.")] });
+
+    const results = await analyze({ cwd: lodashApp('const _ = require("lodash");\n_.setKey({}, "a");\n') });
+
+    expect(verdicts(results)).toEqual([["GHSA-named-as-a-call", "setKey", "REACHABLE", undefined]]);
+  });
+
+  it.each([
+    ["a renamed import", 'const { template: compile } = require("lodash");\ncompile("x");\n'],
+    ["a callback", 'const _ = require("lodash");\n["x"].map(_.template);\n'],
+    ["a re-export through another module", 'const lib = require("./lib");\nlib.template("x");\n'],
+  ])("reports UNKNOWN (unresolved-reference) when app code names the symbol in %s", async (_label, source) => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp(source);
+    writeProjectFile(cwd, "lib.js", 'module.exports = require("lodash");\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]]);
+  });
+
+  it("does not read the symbol from files no entry point reaches", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(cwd, path.join("scripts", "unused.js"), 'const _ = require("lodash");\n_.template("x");\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("reads calls from source files of 32 KB and more", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const padding = `// ${"x".repeat(100)}\n`.repeat(400);
+    const cwd = lodashApp(`const _ = require("lodash");\n${padding}_.template("x");\n`);
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
   });
 
   it("aggregates lockfiles from workspace roots", async () => {
@@ -218,7 +390,7 @@ describe("analyzer", () => {
     expect(results.map((result) => result.advisory.package).sort()).toEqual(["lodash", "minimist"]);
   });
 
-  it("marks stale cached advisories as unknown when OSV fetch fails", async () => {
+  it("marks stale cached advisories as unknown when hydrating a record fails", async () => {
     const cacheDir = path.join(makeTempDir(), ".reachable-cache");
     const cacheKey = createCacheKey("lodash", "4.17.20");
     mkdirSync(cacheDir, { recursive: true });
@@ -234,7 +406,11 @@ describe("analyzer", () => {
       ),
       "utf8",
     );
-    nock("https://api.osv.dev").post("/v1/querybatch").reply(400, "bad request");
+    nock("https://api.osv.dev")
+      .post("/v1/querybatch")
+      .reply(200, { results: [{ vulns: [{ id: "GHSA-stale-cache" }] }] })
+      .get("/v1/vulns/GHSA-stale-cache")
+      .reply(404, { code: 5, message: "Bug not found." });
 
     const results = await analyze({
       cwd: fixturePath("simple-express"),
@@ -244,6 +420,26 @@ describe("analyzer", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.status).toBe("UNKNOWN");
+    expect(results[0]?.reason).toBe("lookup-failed");
     expect(results[0]?.advisory.ghsaId).toBe("GHSA-stale-cache");
+  });
+
+  it("never uses the id-only records 1.0.11 and earlier cached, fresh or stale", async () => {
+    const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
+    const legacyKey = createHash("sha256").update("lodash@4.17.20").digest("hex");
+    writeProjectFile(
+      cwd,
+      path.join(".reachable-cache", `${legacyKey}.json`),
+      JSON.stringify({ fetchedAt: new Date().toISOString(), advisories: [{ id: "GHSA-35jh-r3h4-6jhm", modified: "2026-10-17T02:55:38Z" }] }),
+    );
+
+    nock("https://api.osv.dev").post("/v1/querybatch").reply(400, "bad request");
+    const offline = await analyze({ cwd });
+    mockOsv({ lodash: [templateAdvisory] });
+    const online = await analyze({ cwd });
+
+    expect(offline).toEqual([]);
+    expect(verdicts(online)).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+    expect(online[0]?.advisory.package).toBe("lodash");
   });
 });

@@ -60,4 +60,14 @@ describe("parser/typescript", () => {
     expect(parsedModule.file).toBe(componentFile);
     expect(parsedModule.exports).toEqual([{ name: "App", line: 2 }]);
   });
+
+  it("parses files of 32 KB and more", () => {
+    const file = path.join(makeTempDir(), "big.ts");
+    writeFileSync(file, `import _ from "lodash";\n${"const value: number = 1;\n".repeat(1500)}_.template("x");\n`, "utf8");
+
+    const parsedModule = parseFile(file);
+
+    expect(parsedModule.imports.map((entry) => entry.source)).toEqual(["lodash"]);
+    expect(parsedModule.calls).toEqual([{ callee: "_.template", line: 1502 }]);
+  });
 });
