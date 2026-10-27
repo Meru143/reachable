@@ -846,5 +846,11 @@ describe("namedInDependencyCode", () => {
     expect(namedInDependencyCode(cwd, names)).toEqual(new Set(["lodash", "chalk", "debug"]));
     // Past the byte limit nothing is ruled out.
     expect(namedInDependencyCode(cwd, names, 10)).toBeNull();
+
+    // Nor when a package links out of the project (file:../shared): its code is not searched.
+    const shared = makeTempDir();
+    writeProjectFile(shared, "index.js", "require('qs');\n");
+    symlinkSync(shared, path.join(cwd, "node_modules", "shared"), "junction");
+    expect(namedInDependencyCode(cwd, names)).toBeNull();
   });
 });

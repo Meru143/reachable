@@ -1,5 +1,5 @@
 // Reachability analysis orchestration.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { buildGraph, isSkippedTestFile } from "./graph/builder.js";
@@ -662,13 +662,21 @@ const MAX_DEPENDENCY_CODE_BYTES = 256 * 1024 * 1024;
 // can require another without declaring it (consolidate@0.16 loads lodash to render templates), so the lockfile's
 // dependency lists miss it. Every node_modules folder counts, at any depth, except the packages the analysis leaves
 // out (dev-only) and a package's mentions of itself. Symlinks are not followed: npm links workspaces, the app's own
-// code, into node_modules. null when the code is too large to read in full.
+// code, into node_modules. null when the search cannot be complete: the code is too large to read in full, or a
+// package links out of the project (file:../shared).
 export function namedInDependencyCode(cwd: string, names: string[], maxBytes = MAX_DEPENDENCY_CODE_BYTES): Set<string> | null {
   const projectDirs = [cwd, ...workspaceDirectories(cwd)];
   const excluded = new Set(projectDirs.filter(hasPackageLock).flatMap((directory) => [...excludedPackagePaths(directory)]));
   const specifier = new RegExp(String.raw`(['"\x60])(${names.map(escapeRegExp).join("|")})(?:/[^'"\x60\s]*)?\1`, "g");
   const found = new Set<string>();
+  const root = realpathSync(cwd);
   let bytes = 0;
+
+  // A link into the project is a workspace, whose code the graph reads; a link out of it is code this search skips.
+  const linksIntoProject = (link: string): boolean => {
+    const relative = path.relative(root, realpathSync(link));
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  };
 
   // Every file in a package folder; nested node_modules folders hold other packages.
   const readPackage = (directory: string, owner: string): boolean => {
@@ -697,17 +705,26 @@ export function namedInDependencyCode(cwd: string, names: string[], maxBytes = M
   };
 
   // node_modules/<name> and node_modules/@scope/<name>; dot folders (.bin, .cache) are not packages.
-  const readNodeModules = (directory: string): boolean =>
-    readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+  const readNodeModules = (directory: string): boolean => {
+    const packages = readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => !entry.name.startsWith("."))
       .flatMap((entry) =>
-        entry.name.startsWith("@")
-          ? readdirSync(path.join(directory, entry.name), { withFileTypes: true })
-              .filter((scoped) => scoped.isDirectory())
-              .map((scoped) => [path.join(directory, entry.name, scoped.name), `${entry.name}/${scoped.name}`])
-          : [[path.join(directory, entry.name), entry.name]],
-      )
-      .every(([packageDir, owner]) => excluded.has(packageDir) || readPackage(packageDir, owner));
+        entry.name.startsWith("@") && entry.isDirectory()
+          ? readdirSync(path.join(directory, entry.name), { withFileTypes: true }).map((scoped) => ({
+              dirent: scoped,
+              packageDir: path.join(directory, entry.name, scoped.name),
+              owner: `${entry.name}/${scoped.name}`,
+            }))
+          : [{ dirent: entry, packageDir: path.join(directory, entry.name), owner: entry.name }],
+      );
+    if (packages.some(({ dirent, packageDir }) => dirent.isSymbolicLink() && !linksIntoProject(packageDir))) {
+      return false;
+    }
+
+    return packages
+      .filter(({ dirent }) => dirent.isDirectory())
+      .every(({ packageDir, owner }) => excluded.has(packageDir) || readPackage(packageDir, owner));
+  };
 
   try {
     const complete = projectDirs
