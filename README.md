@@ -112,7 +112,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 | Reason | Meaning |
 | --- | --- |
 | `lookup-failed` | The OSV lookup failed; the verdict comes from an expired cache entry. |
-| `not-imported` | Your code never imports the package. It is installed for other dependencies, whose code is not analyzed. |
+| `not-imported` | Your code never imports the package. Other dependencies may use it, and their code is not analyzed. |
 | `symbol-unknown` | The advisory does not name a vulnerable function. |
 | `transitive` | Other installed packages depend on the package and may reach the function. Either your code imports the package without reaching the function, or this copy is nested under another package (`node_modules/a/node_modules/b`) and only that package loads it. |
 | `symbol-unconfirmed` | The named function is not confirmed as an entry point of the package: it is named only as a call, the package's entry files do not export it, or the package uses it itself (a call, an alias, a callback), so its other functions may reach it. |
@@ -129,7 +129,7 @@ For each installed package (every version in the lockfile, dev dependencies excl
 
 ## What changed in 1.0.12
 
-- Advisories are complete again. Up to 1.0.11, `reachable` read OSV's batch endpoint, which returns only advisory ids, so every result came out as package `unknown`, score 0, severity `LOW`, symbol `unknown` and status `UNKNOWN`. It now fetches each advisory's record. Caches written by earlier versions are ignored; you can delete `.reachable-cache`.
+- Advisories carry their package, severity and functions. Up to 1.0.11, `reachable` read OSV's batch endpoint, which returns only advisory ids, so every result came out as package `unknown`, score 0, severity `LOW`, symbol `unknown` and status `UNKNOWN`. It now fetches each advisory's record. Caches written by earlier versions are ignored; you can delete `.reachable-cache`.
 - Only the installed package's entry in an advisory is reported (a lodash advisory no longer adds rows for `lodash-es` or `lodash.template`).
 - `UNREACHABLE` follows the rules above, and `UNKNOWN` results carry a `reason`.
 - Every function an advisory names gets its own row, and the package's own name is never used as one.
