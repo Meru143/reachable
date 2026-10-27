@@ -333,6 +333,25 @@ describe("analyzer", () => {
     expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
   });
 
+  it("reads every subpath the package exports", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, "function template(s) { return s; }\nexports.template = template;\n");
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "package.json"), JSON.stringify({ name: "lodash", version: "4.17.20", exports: { ".": "./lodash.js", "./unsafe": "./unsafe.js" } }));
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "unsafe.js"), 'const { template } = require("./lodash.js");\nexports.renderUnsafe = (s) => template(s);\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
+
+  it("reads the subpaths the app imports, and stays UNKNOWN when one cannot be found", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const deep = lodashApp('const _ = require("lodash");\nconst render = require("lodash/render");\nrender(_.map([1], String));\n');
+    writeProjectFile(deep, path.join("node_modules", "lodash", "render.js"), 'var lodash = require("./lodash.js");\nmodule.exports = function render(s) { return lodash.template(s); };\n');
+    const missing = lodashApp('const _ = require("lodash");\nrequire("lodash/missing");\n_.map([1], String);\n');
+
+    expect(verdicts(await analyze({ cwd: deep }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+    expect(verdicts(await analyze({ cwd: missing }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
+
   it("does not count dev-only dependents", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {

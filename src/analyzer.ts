@@ -383,7 +383,7 @@ const MAX_PACKAGE_FILES = 2000;
 
 // The installed copy the app loads (node_modules of the project or a workspace), preferring the given version.
 // Uses behind a dynamic require are not seen.
-function readPackageCode(cwd: string, packageName: string, version: string): PackageCode | null {
+function readPackageCode(cwd: string, packageName: string, version: string, importedSubpaths: string[]): PackageCode | null {
   const packageDirs = [cwd, ...workspaceDirectories(cwd)]
     .map((directory) => path.join(directory, "node_modules", packageName))
     .filter((directory) => existsSync(path.join(directory, "package.json")));
@@ -394,10 +394,10 @@ function readPackageCode(cwd: string, packageName: string, version: string): Pac
 
   const manifest = packageJsonAt(packageDir) ?? {};
   const exportsField = manifest.exports;
-  const rootExport =
+  const subpathMap =
     exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith("."))
-      ? (exportsField as Record<string, unknown>)["."]
-      : exportsField;
+      ? (exportsField as Record<string, unknown>)
+      : null;
   const resolve = (target: string, fromFile: string): string | null => {
     const resolved = resolveImport(target, fromFile, packageDir);
     return resolved && path.isAbsolute(resolved) ? resolved : null;
@@ -416,10 +416,23 @@ function readPackageCode(cwd: string, packageName: string, version: string): Pac
     }
   };
 
-  for (const entry of [manifest.main ?? "index", manifest.module, ...stringLeaves(rootExport)]) {
+  const resolveEntry = (target: string): string | null => resolve(target.startsWith(".") ? target : `./${target}`, manifestPath);
+
+  // Every target the package exports, subpaths included (pkg/unsafe loads code the root entry may never require).
+  for (const entry of [manifest.main ?? "index", manifest.module, ...stringLeaves(exportsField)]) {
     if (typeof entry === "string") {
-      parse(resolve(entry.startsWith(".") ? entry : `./${entry}`, manifestPath));
+      parse(resolveEntry(entry));
     }
+  }
+
+  // Subpaths the app imports (lodash/template); one that cannot be followed leaves the symbol unconfirmed.
+  for (const subpath of importedSubpaths) {
+    const files = (subpathMap ? stringLeaves(subpathMap[subpath]) : [subpath]).map(resolveEntry).filter((file): file is string => file !== null);
+    if (files.length === 0) {
+      return null;
+    }
+
+    files.forEach(parse);
   }
 
   const entryFiles = new Set(parsed.keys());
@@ -497,7 +510,10 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
   const isEntryPointOfPackage = ({ name, version }: InstalledPackage, symbol: string): boolean => {
     const key = `${name}@${version}`;
     if (!packageCode.has(key)) {
-      packageCode.set(key, readPackageCode(cwd, name, version));
+      const subpaths = graph.edges
+        .filter((edge) => edge.to === `pkg:${name}::module` && edge.importedFrom.startsWith(`${name}/`))
+        .map((edge) => `.${edge.importedFrom.slice(name.length)}`);
+      packageCode.set(key, readPackageCode(cwd, name, version, [...new Set(subpaths)]));
     }
 
     const code = packageCode.get(key);
