@@ -52,7 +52,7 @@ describe("integration/reachable", () => {
       lodash: [advisoryFor("lodash", "trim", "GHSA-reachable-lodash")],
     });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("simple-express"),
       noCache: true,
     });
@@ -67,7 +67,7 @@ describe("integration/reachable", () => {
       lodash: [advisoryFor("lodash", "trim", "GHSA-safe-lodash")],
     });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("safe-usage"),
       noCache: true,
     });
@@ -81,7 +81,7 @@ describe("integration/reachable", () => {
       minimist: [advisoryFor("minimist", "minimist", "GHSA-workspace-minimist")],
     });
 
-    const results = await analyze({
+    const { results } = await analyze({
       cwd: fixturePath("monorepo"),
       noCache: true,
     });

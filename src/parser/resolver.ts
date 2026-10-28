@@ -4,7 +4,14 @@ import path from "node:path";
 
 import ts from "typescript";
 
-const RESOLVABLE_EXTENSIONS = [".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs"];
+const RESOLVABLE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+// TypeScript sources import each other by their compiled names: ./greet.js is greet.ts, ./greet.cjs is greet.cts.
+const TYPESCRIPT_SOURCES = new Map([
+  [".js", [".ts", ".tsx"]],
+  [".jsx", [".tsx"]],
+  [".mjs", [".mts"]],
+  [".cjs", [".cts"]],
+]);
 
 type TsPathConfig = {
   baseUrl: string;
@@ -21,10 +28,13 @@ function packageNameFromImport(importPath: string): string {
   return importPath.split("/")[0];
 }
 
-function resolveFileCandidate(candidate: string): string | null {
-  if (existsSync(candidate)) {
-    if (statSync(candidate).isFile()) {
-      return candidate;
+/** The file a path names: the file itself, with an extension added, its TypeScript source, or a directory's index. */
+export function resolveFileCandidate(candidate: string): string | null {
+  const compiled = path.extname(candidate);
+  const sources = (TYPESCRIPT_SOURCES.get(compiled) ?? []).map((source) => `${candidate.slice(0, -compiled.length)}${source}`);
+  for (const file of [candidate, ...sources]) {
+    if (existsSync(file) && statSync(file).isFile()) {
+      return file;
     }
   }
 

@@ -9,7 +9,8 @@ function summaryCount(results: ReachabilityResult[], status: ReachabilityResult[
   return results.filter((result) => result.status === status).length;
 }
 
-export function formatMarkdown(results: ReachabilityResult[]): string {
+/** `notice`: a line for the end, such as packages that could not be checked. */
+export function formatMarkdown(results: ReachabilityResult[], notice = ""): string {
   const reachable = results.filter((result) => result.status === "REACHABLE");
   const unknown = results.filter((result) => result.status === "UNKNOWN");
   const unreachable = results.filter((result) => result.status === "UNREACHABLE");
@@ -22,7 +23,7 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
   ];
 
   if (results.length === 0) {
-    lines.push("No advisories found.");
+    lines.push(notice ? `No advisories found in the packages that were checked.\n\n**${notice}**` : "No advisories found.");
     return lines.join("\n");
   }
 
@@ -56,6 +57,10 @@ export function formatMarkdown(results: ReachabilityResult[]): string {
     }
     lines.push("");
     lines.push("</details>");
+  }
+
+  if (notice) {
+    lines.push("", `**${notice}**`);
   }
 
   return lines.join("\n");

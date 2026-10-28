@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveImport } from "../../src/parser/resolver.js";
+import { resolveFileCandidate, resolveImport } from "../../src/parser/resolver.js";
 
 const createdDirs: string[] = [];
 
@@ -93,5 +93,19 @@ describe("parser/resolver", () => {
     writeFileSync(targetFile, "export const widget = true;\n", "utf8");
 
     expect(resolveImport("@/widgets", fromFile, cwd)).toBe(targetFile);
+  });
+
+  it("resolves a directory to its index file and a compiled name to its TypeScript source, never to a directory", () => {
+    const cwd = makeTempDir();
+    for (const file of [path.join("lib", "index.js"), path.join("src", "greet.cts"), path.join("src", "util.ts"), path.join("src", "dir.js", "keep")]) {
+      mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+      writeFileSync(path.join(cwd, file), "", "utf8");
+    }
+
+    expect(resolveFileCandidate(path.join(cwd, "lib"))).toBe(path.join(cwd, "lib", "index.js"));
+    expect(resolveFileCandidate(path.join(cwd, "src", "greet.cjs"))).toBe(path.join(cwd, "src", "greet.cts"));
+    expect(resolveFileCandidate(path.join(cwd, "src", "util.js"))).toBe(path.join(cwd, "src", "util.ts"));
+    expect(resolveFileCandidate(path.join(cwd, "src", "greet"))).toBe(path.join(cwd, "src", "greet.cts"));
+    expect(resolveFileCandidate(path.join(cwd, "src", "dir.js"))).toBeNull();
   });
 });

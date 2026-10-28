@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { formatJson } from "../../src/output/json.js";
 import { formatMarkdown } from "../../src/output/markdown.js";
@@ -116,5 +116,32 @@ describe("output formatters", () => {
 
     expect(markdown).toContain("No advisories found.");
     expect(table).toContain("No advisories found.");
+  });
+
+  it("says which packages could not be checked: a JSON field, a closing line in the table and markdown", () => {
+    const notice = "1 package could not be checked (the OSV lookup failed), so these results are incomplete: lodash@4.17.20.";
+
+    expect(JSON.parse(formatJson(resultsFixture(), ["lodash@4.17.20"])).unchecked).toEqual(["lodash@4.17.20"]);
+    expect(JSON.parse(formatJson(resultsFixture())).unchecked).toEqual([]);
+    expect(formatTable(resultsFixture(), notice).endsWith(`\n\n${notice}`)).toBe(true);
+    expect(formatMarkdown(resultsFixture(), notice).endsWith(`\n\n**${notice}**`)).toBe(true);
+    expect(formatTable([], notice)).toBe(`No advisories found in the packages that were checked.\n\n${notice}`);
+    expect(formatMarkdown([], notice)).toContain(`No advisories found in the packages that were checked.\n\n**${notice}**`);
+  });
+
+  describe("with NO_COLOR", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    });
+
+    it("prints no colour codes, table borders included", async () => {
+      vi.stubEnv("NO_COLOR", "1");
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.resetModules();
+      const { formatTable: plainTable } = await import("../../src/output/table.js");
+
+      expect(plainTable(resultsFixture())).not.toMatch(new RegExp(`${String.fromCharCode(27)}\\[`));
+    });
   });
 });

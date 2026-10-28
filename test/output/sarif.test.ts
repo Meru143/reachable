@@ -79,4 +79,16 @@ describe("output/sarif", () => {
     expect(sarif.runs[0].results).toHaveLength(1);
     expect(sarif.runs[0].results[0]?.ruleId).toBe("GHSA-1111-2222-3333");
   });
+
+  it("records in the run whether the scan was complete, for consumers that read only the SARIF", () => {
+    type Run = { invocations: Array<{ executionSuccessful: boolean; toolExecutionNotifications?: Array<{ level: string; message: { text: string } }> }> };
+    const run = (sarif: string) => (JSON.parse(sarif) as { runs: Run[] }).runs[0]?.invocations;
+    const notice = "1 package could not be checked (the OSV lookup failed), so these results are incomplete: lodash@4.17.20.";
+
+    expect(run(formatSarif([]))).toEqual([{ executionSuccessful: true }]);
+    expect(run(formatSarif([], notice, true))).toEqual([{ executionSuccessful: false, toolExecutionNotifications: [{ level: "error", message: { text: notice } }] }]);
+    expect(run(formatSarif([], "1 package had no cached advisory data.", false))).toEqual([
+      { executionSuccessful: true, toolExecutionNotifications: [{ level: "warning", message: { text: "1 package had no cached advisory data." } }] },
+    ]);
+  });
 });

@@ -6,7 +6,7 @@ import Parser from "tree-sitter";
 import TypeScriptGrammars from "tree-sitter-typescript";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseFile } from "../../src/parser/index.js";
+import { languageOf, parseFile } from "../../src/parser/index.js";
 import { extractTypeImports } from "../../src/parser/typescript.js";
 
 const parser = new Parser();
@@ -80,5 +80,25 @@ describe("parser/typescript", () => {
     expect(used).toContain("template");
     expect(used).toContain("dispatch");
     expect(used).not.toContain("run");
+  });
+
+  it("parses .cts like .ts, and an extensionless file as JavaScript unless its shebang names another interpreter", () => {
+    const dir = makeTempDir();
+    const files = {
+      cts: ["greet.cts", 'import _ from "lodash";\nexport const greet = (name: string): string => _.template("Hi")({ name });\n'],
+      node: ["www", '#!/usr/bin/env node\nconst app = require("../app");\napp.listen(3000);\n'],
+      plain: ["cli", 'require("./main");\n'],
+      shell: ["start", "#!/bin/sh\nexec node index.js\n"],
+      markdown: ["README.md", "# app\n"],
+    };
+    for (const [name, source] of Object.values(files)) {
+      writeFileSync(path.join(dir, name), source, "utf8");
+    }
+    const file = (key: keyof typeof files) => path.join(dir, files[key][0]);
+
+    expect(parseFile(file("cts")).calls).toEqual([{ callee: "_.template", line: 2 }]);
+    expect(parseFile(file("node")).imports.map((entry) => entry.source)).toEqual(["../app"]);
+    expect([file("cts"), file("node"), file("plain"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", null, null]);
+    expect(() => parseFile(file("shell"))).toThrow("Not JavaScript");
   });
 });
