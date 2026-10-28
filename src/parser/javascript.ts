@@ -137,6 +137,16 @@ function declares(node: Parser.SyntaxNode): boolean {
   }
 }
 
+// The member a member access reads by name: map for _.map and _["map"], none for _[name].
+function memberName(access: Parser.SyntaxNode): string | null {
+  if (access.type === "member_expression") {
+    return access.childForFieldName("property")?.text ?? null;
+  }
+
+  const index = access.type === "subscript_expression" ? access.childForFieldName("index") : null;
+  return index?.type === "string" ? index.text.slice(1, -1) : null;
+}
+
 // What code does with a module value (require("x"), import("x"), or a name bound to one): reads or calls a member by
 // its name (_.map(), _["map"], _(x), const { map } = _), which the call graph sees; gives it another name (const lib
 // = _), which is followed; or anything else, which hands the whole module to code the graph does not follow
@@ -146,8 +156,11 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
   const parent = node.parent;
   switch (parent?.type) {
     case "member_expression":
-      // _.default is the module itself (ES module interop).
-      return parent.childForFieldName("property")?.text === "default" ? moduleUse(parent) : "named";
+    case "subscript_expression": {
+      // _.default and _["default"] are the module itself (ES module interop); obj[_] and _[name] are not named reads.
+      const name = sameNode(parent.childForFieldName("object"), node) ? memberName(parent) : null;
+      return name === null ? "opaque" : name === "default" ? moduleUse(parent) : "named";
+    }
     case undefined:
     case "call_expression":
     case "expression_statement":
@@ -156,8 +169,6 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
     case "nested_type_identifier":
     case "nested_identifier":
       return "named";
-    case "subscript_expression":
-      return sameNode(parent.childForFieldName("object"), node) && parent.childForFieldName("index")?.type === "string" ? "named" : "opaque";
     case "await_expression":
     case "parenthesized_expression":
     case "as_expression":
@@ -247,7 +258,7 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
     if (loader === "require" || loader === "import") {
       // import("x").then(render) hands the module to the callback.
-      const promised = loader === "import" && call?.parent?.type === "member_expression" && ["then", "catch", "finally"].includes(call.parent.childForFieldName("property")?.text ?? "");
+      const promised = loader === "import" && call?.parent && ["then", "catch", "finally"].includes(memberName(call.parent) ?? "");
       if (promised) {
         opaque.add(specifier);
       } else if (call) {
@@ -271,8 +282,9 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     } else if (holder?.type === "import_require_clause") {
       bind(holder.namedChild(0)?.text ?? "", specifier);
     } else if (holder?.type === "export_statement") {
+      // Not export type { default } from "x", which TypeScript erases.
       const clause = holder.namedChildren.find((entry) => entry.type === "export_clause");
-      if (!clause || /\bdefault\b/.test(clause.text)) {
+      if (!/^export\s+type\b/.test(holder.text) && (!clause || /\bdefault\b/.test(clause.text))) {
         opaque.add(specifier);
       }
     } else if (!["module", "literal_type", "property_signature"].includes(node.parent?.type ?? "") && SPECIFIER.test(specifier)) {

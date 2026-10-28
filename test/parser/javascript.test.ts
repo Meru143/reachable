@@ -140,6 +140,7 @@ describe("parser/javascript", () => {
         lazy.map([1], String);
         (await import("lodash")).default.map([1], String);
         require("lodash").default.map([1], String);
+        require("lodash")["default"].map([1], String);
       `),
     );
 
@@ -166,6 +167,8 @@ describe("parser/javascript", () => {
     ["a re-exported default", 'export { default as lib } from "lodash";'],
     ["an awaited import()", 'const lib = await import("lodash");\nregister(lib);'],
     ["a promise chain", 'import("lodash").then(render);'],
+    ["a promise chain in brackets", 'import("lodash")["then"](render);'],
+    ["the default property in brackets", 'const lib = require("lodash")["default"];\napp.locals.lib = lib;'],
     ["a default import by name", 'import { default as lib, map } from "lodash";\nregister(lib, map);'],
     ["a destructured default", 'const { default: lib } = await import("lodash");\nregister(lib);'],
     ["the default property", 'const lib = require("lodash").default;\napp.locals.lib = lib;'],
