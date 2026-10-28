@@ -109,7 +109,7 @@ describe("parser/typescript", () => {
     const handed = path.join(dir, "handed.ts");
     writeFileSync(
       typed,
-      'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\ntype Engine = "lodash" | "underscore";\ninterface Engines { "lodash": Engine }\nexport const out = (_ as Lodash).map([1], String);\n',
+      'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\ntype Engine = "lodash" | "underscore";\ninterface Engines { "lodash": Engine }\ntype Dict = import("lodash").Dictionary<string>;\nlet lib: typeof import("lodash");\nlet fp: import("lodash/fp").LodashMap;\nexport const out = (_ as Lodash).map([1], String);\n',
       "utf8",
     );
     writeFileSync(declared, 'declare module "lodash";\n', "utf8");
