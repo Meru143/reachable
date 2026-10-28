@@ -136,6 +136,10 @@ describe("parser/javascript", () => {
         lib.chunk([1, 2], 1);
         if (typeof _ === "function" && !lo) [1].map((_, i) => i);
         for (const lo of [1]) count += 1;
+        const { default: lazy } = await import("lodash");
+        lazy.map([1], String);
+        (await import("lodash")).default.map([1], String);
+        require("lodash").default.map([1], String);
       `),
     );
 
@@ -161,6 +165,10 @@ describe("parser/javascript", () => {
     ["export * (h-barrel-star-ts)", 'export * from "lodash";'],
     ["a re-exported default", 'export { default as lib } from "lodash";'],
     ["an awaited import()", 'const lib = await import("lodash");\nregister(lib);'],
+    ["a promise chain", 'import("lodash").then(render);'],
+    ["a default import by name", 'import { default as lib, map } from "lodash";\nregister(lib, map);'],
+    ["a destructured default", 'const { default: lib } = await import("lodash");\nregister(lib);'],
+    ["the default property", 'const lib = require("lodash").default;\napp.locals.lib = lib;'],
     ["its name, to a dependency (h-computed-spec)", 'const render = require("tplkit");\nrender("lodash", "Hi <%= n %>");'],
     ["its name, to createRequire (h-createrequire)", 'const load = createRequire(import.meta.url);\nload("lodash/template");'],
     ["its name in a template literal", "const name = `lodash`;\nawait import(name);"],

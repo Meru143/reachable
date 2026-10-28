@@ -145,8 +145,10 @@ function declares(node: Parser.SyntaxNode): boolean {
 function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxNode {
   const parent = node.parent;
   switch (parent?.type) {
-    case undefined:
     case "member_expression":
+      // _.default is the module itself (ES module interop).
+      return parent.childForFieldName("property")?.text === "default" ? moduleUse(parent) : "named";
+    case undefined:
     case "call_expression":
     case "expression_statement":
     case "unary_expression":
@@ -177,7 +179,14 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
         return parent.parent?.parent?.type === "export_statement" ? "opaque" : target;
       }
 
-      return target.type === "object_pattern" && target.descendantsOfType(["rest_pattern", "computed_property_name"]).length === 0 ? "named" : "opaque";
+      if (target.type !== "object_pattern" || target.descendantsOfType(["rest_pattern", "computed_property_name"]).length > 0) {
+        return "opaque";
+      }
+
+      // const { default: lib } = await import("x"): lib is the module.
+      const whole = target.namedChildren.find((entry) => entry.type === "pair_pattern" && entry.childForFieldName("key")?.text.replace(/["']/g, "") === "default");
+      const value = whole?.childForFieldName("value");
+      return !whole ? "named" : value?.type === "identifier" ? value : "opaque";
     }
     default:
       return "opaque";
@@ -235,13 +244,28 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     const specifier = node.text.slice(1, -1);
     const holder = node.type === "string" ? node.parent : null;
     const call = holder?.type === "arguments" && sameNode(holder.namedChild(0), node) ? holder.parent : null;
-    if (call?.type === "call_expression" && ["require", "import"].includes(call.childForFieldName("function")?.text ?? "")) {
-      follow(call, specifier);
+    const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
+    if (loader === "require" || loader === "import") {
+      // import("x").then(render) hands the module to the callback.
+      const promised = loader === "import" && call?.parent?.type === "member_expression" && ["then", "catch", "finally"].includes(call.parent.childForFieldName("property")?.text ?? "");
+      if (promised) {
+        opaque.add(specifier);
+      } else if (call) {
+        follow(call, specifier);
+      }
     } else if (holder?.type === "import_statement") {
+      // import _ from "x", import * as _ from "x" and import { default as _ } from "x" bind the module.
       for (const child of holder.namedChildren.find((entry) => entry.type === "import_clause")?.namedChildren ?? []) {
-        const name = child.type === "namespace_import" ? child.namedChild(0) : child.type === "identifier" ? child : null;
-        if (name) {
-          bind(name.text, specifier);
+        const names =
+          child.type === "namespace_import"
+            ? [child.namedChild(0)]
+            : child.type === "identifier"
+              ? [child]
+              : child.namedChildren.filter((entry) => entry.childForFieldName("name")?.text === "default").map((entry) => entry.childForFieldName("alias"));
+        for (const name of names) {
+          if (name) {
+            bind(name.text, specifier);
+          }
         }
       }
     } else if (holder?.type === "import_require_clause") {
