@@ -1,3 +1,10 @@
+## [1.0.15](https://github.com/Meru143/reachable/compare/v1.0.14...v1.0.15) (2026-10-28)
+
+
+### Bug Fixes
+
+* **scan:** keep runtime-picked functions and modules UNKNOWN with generic safety nets ([#13](https://github.com/Meru143/reachable/issues/13)) ([900e43a](https://github.com/Meru143/reachable/commit/900e43ad42bb633ef8801136bf03fb6fe249d061))
+
 ## [1.0.14](https://github.com/Meru143/reachable/compare/v1.0.13...v1.0.14) (2026-10-28)
 
 
