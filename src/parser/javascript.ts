@@ -158,6 +158,12 @@ function unescapeString(text: string): string {
   );
 }
 
+// The name an import or export specifier or a destructuring key spells: an identifier or a string, escapes decoded
+// (default, "default", \u{64}efault).
+function exportName(node: Parser.SyntaxNode | null): string | null {
+  return node ? unescapeString(node.type === "string" ? node.text.slice(1, -1) : node.text) : null;
+}
+
 // The member a member access reads by name: map for _.map and _["map"], none for _[name].
 function memberName(access: Parser.SyntaxNode): string | null {
   // A property may spell its name with escapes (.th\u{65}n).
@@ -219,7 +225,7 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
       }
 
       // const { default: lib } = await import("x"): lib is the module.
-      const whole = target.namedChildren.find((entry) => entry.type === "pair_pattern" && entry.childForFieldName("key")?.text.replace(/["']/g, "") === "default");
+      const whole = target.namedChildren.find((entry) => entry.type === "pair_pattern" && exportName(entry.childForFieldName("key")) === "default");
       const value = whole?.childForFieldName("value");
       return !whole ? "named" : value?.type === "identifier" ? value : "opaque";
     }
@@ -307,7 +313,7 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
             ? [child.namedChild(0)]
             : child.type === "identifier"
               ? [child]
-              : child.namedChildren.filter((entry) => entry.childForFieldName("name")?.text === "default").map((entry) => entry.childForFieldName("alias"));
+              : child.namedChildren.filter((entry) => exportName(entry.childForFieldName("name")) === "default").map((entry) => entry.childForFieldName("alias"));
         for (const name of names) {
           if (name) {
             bind(name.text, specifier);
@@ -319,7 +325,7 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     } else if (holder?.type === "export_statement") {
       // Not export type { default } from "x", which TypeScript erases.
       const clause = holder.namedChildren.find((entry) => entry.type === "export_clause");
-      if (!/^export\s+type\b/.test(holder.text) && (!clause || /\bdefault\b/.test(clause.text))) {
+      if (!/^export\s+type\b/.test(holder.text) && (!clause || clause.namedChildren.some((entry) => exportName(entry.childForFieldName("name")) === "default"))) {
         opaque.add(specifier);
       }
     } else if (!["module", "literal_type", "property_signature"].includes(node.parent?.type ?? "") && SPECIFIER.test(specifier)) {

@@ -913,6 +913,16 @@ describe("analyzer", () => {
     warn.mockRestore();
   });
 
+  it("reads opaque uses in a file only a computed require loads", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp(
+      'const fs = require("fs");\nconst _ = require("lodash");\nfor (const file of fs.readdirSync(__dirname + "/routes")) require(__dirname + "/routes/" + file);\nconsole.log(_.map([1], String));\n',
+    );
+    writeProjectFile(cwd, path.join("routes", "views.js"), 'const _ = require("lodash");\nmodule.exports = (req, res, next) => {\n  res.locals.lib = _;\n  next();\n};\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(unresolved);
+  });
+
   it("reads a function name spelled with escapes, in a call and in the project search", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const called = lodashApp('const _ = require("lodash");\nconsole.log(_.temp\\u{6c}ate("x")());\n');
