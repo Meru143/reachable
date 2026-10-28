@@ -1,5 +1,6 @@
 # Security updates only (no version-update PRs). Production bumps are fix(deps)
 # commits, so merging one releases a patch; dev-only bumps are chore(deps-dev).
+# Dependabot still titles some dev-only transitive bumps fix(deps): retitle those chore(deps-dev) before squash-merging.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -11,3 +12,10 @@ updates:
       prefix: fix
       prefix-development: chore
       include: scope
+  # The README demo scans this fixture's lodash 4.17.20 on purpose: never update it.
+  - package-ecosystem: npm
+    directory: /docs/assets/render-staging/demo/cli-fixture
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "*"
