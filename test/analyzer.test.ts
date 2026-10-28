@@ -1018,4 +1018,13 @@ describe("mentionedInProject", () => {
     writeProjectFile(cwd, path.join("views", "report.html"), `<p>${"x".repeat(200)}</p>\n`);
     expect(mentionedInProject(cwd, buildGraph([], [], cwd), symbols, 100)).toEqual(new Set(symbols));
   });
+
+  it("decodes escapes before searching, except one written after an escaped backslash", () => {
+    const cwd = makeTempDir();
+    writeProjectFile(cwd, "literal.js", 'module.exports = "\\\\u{74}emplate";\n');
+
+    expect(mentionedInProject(cwd, buildGraph([], [], cwd), ["template"])).toEqual(new Set());
+    writeProjectFile(cwd, "call.js", 'module.exports = (_) => _.temp\\u{0000006c}ate("x");\n');
+    expect(mentionedInProject(cwd, buildGraph([], [], cwd), ["template"])).toEqual(new Set(["template"]));
+  });
 });

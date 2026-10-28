@@ -144,16 +144,16 @@ function decodeEscape(escape: string, hex: string): string {
 }
 
 /** Source text with its \x6c, \u{6c} and four-digit \u escapes decoded: identifiers and strings can spell a name that
- * way (_.temp\u{6c}ate()). Other text is kept. */
+ * way (_.temp\u{6c}ate()). Other text is kept, an escaped backslash too, so the escape after it stays literal. */
 export function decodeEscapes(text: string): string {
-  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4}))/g, (escape, hex, braced, unicode) =>
-    decodeEscape(escape, hex ?? braced ?? unicode),
+  return text.replace(/\\\\|\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4}))/g, (escape, hex, braced, unicode) =>
+    escape === "\\\\" ? escape : decodeEscape(escape, hex ?? braced ?? unicode),
   );
 }
 
 // The value of a string literal's source text, escapes decoded: "lo\x64ash" is lodash.
 function unescapeString(text: string): string {
-  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4})|(.))/gs, (escape, hex, braced, unicode, char: string | undefined) =>
+  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|(.))/gs, (escape, hex, braced, unicode, char: string | undefined) =>
     char ?? decodeEscape(escape, hex ?? braced ?? unicode),
   );
 }
