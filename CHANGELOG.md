@@ -1,3 +1,10 @@
+## [1.0.14](https://github.com/Meru143/reachable/compare/v1.0.13...v1.0.14) (2026-10-28)
+
+
+### Bug Fixes
+
+* **scan:** stop the false UNREACHABLE verdicts 1.0.13 still gave ([#12](https://github.com/Meru143/reachable/issues/12)) ([cbb1b02](https://github.com/Meru143/reachable/commit/cbb1b021b2374d390b34f08a543774d968c851e9))
+
 ## [1.0.13](https://github.com/Meru143/reachable/compare/v1.0.12...v1.0.13) (2026-10-28)
 
 
