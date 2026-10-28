@@ -280,12 +280,18 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     const holder = node.type === "string" ? node.parent : null;
     const call = holder?.type === "arguments" && sameNode(holder.namedChild(0), node) ? holder.parent : null;
     const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
-    if (call && loader === "import" && call.parent?.type !== "await_expression") {
+    // What holds the import() call, parentheses aside: await (import("x")) is awaited too.
+    let outer = call?.parent ?? null;
+    while (outer?.type === "parenthesized_expression") {
+      outer = outer.parent;
+    }
+
+    if (call && loader === "import" && outer?.type !== "await_expression") {
       // An import() promise hands the module on unless it is awaited where it is made: chained (import("x").then(render)),
       // assigned or passed. A bare import("x"); loads it only, and typeof import("x") or a member read under another name
       // is a TypeScript type (import("x").Dictionary).
-      const name = call.parent ? memberName(call.parent) : null;
-      const typeOrLoad = call.parent?.type === "expression_statement" || call.parent?.type === "type_query";
+      const name = outer ? memberName(outer) : null;
+      const typeOrLoad = outer?.type === "expression_statement" || outer?.type === "type_query";
       if (!typeOrLoad && (name === null || ["then", "catch", "finally"].includes(name))) {
         opaque.add(specifier);
       }
