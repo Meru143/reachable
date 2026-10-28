@@ -137,7 +137,7 @@ function declares(node: Parser.SyntaxNode): boolean {
   }
 }
 
-// The value of a string literal's source text: "lodash" is lodash.
+// The value of a string literal's source text, escapes decoded: "lo\x64ash" is lodash.
 function unescapeString(text: string): string {
   return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|(.))/gs, (_escape, hex, braced, unicode, char: string | undefined) =>
     char ?? String.fromCodePoint(parseInt(hex ?? braced ?? unicode, 16)),
@@ -150,8 +150,9 @@ function memberName(access: Parser.SyntaxNode): string | null {
     return access.childForFieldName("property")?.text ?? null;
   }
 
+  // An escaped key (_["temp\x6cate"]) is not a plain name: the text search for the function cannot see it.
   const index = access.type === "subscript_expression" ? access.childForFieldName("index") : null;
-  return index?.type === "string" ? index.text.slice(1, -1) : null;
+  return index?.type === "string" && !index.text.includes("\\") ? index.text.slice(1, -1) : null;
 }
 
 // What code does with a module value (require("x"), import("x"), or a name bound to one): reads or calls a member by

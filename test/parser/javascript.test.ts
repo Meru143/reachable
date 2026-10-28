@@ -173,6 +173,7 @@ describe("parser/javascript", () => {
     ["a promise returned", "export const load = () => import(\"lodash\");"],
     ["its name with escapes", 'render("\\u006codash", text);\nrender("lo\\x64ash", text);'],
     ["the default property in brackets", 'const lib = require("lodash")["default"];\napp.locals.lib = lib;'],
+    ["an escaped member name", 'const _ = require("lodash");\n_["temp\\x6cate"]("x");'],
     ["a default import by name", 'import { default as lib, map } from "lodash";\nregister(lib, map);'],
     ["a destructured default", 'const { default: lib } = await import("lodash");\nregister(lib);'],
     ["the default property", 'const lib = require("lodash").default;\napp.locals.lib = lib;'],

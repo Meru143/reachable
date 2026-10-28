@@ -912,6 +912,27 @@ describe("analyzer", () => {
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ file: "dist/server.js" }), "Skipping an entry point package.json names that does not exist");
     warn.mockRestore();
   });
+
+  it("takes every condition of package.json exports as an entry point, and an exports string", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const conditions = lodashApp("");
+    rmSync(path.join(conditions, "index.js"));
+    writeProjectFile(
+      conditions,
+      "package.json",
+      JSON.stringify({ name: "app", exports: { ".": { types: "./dist/index.d.ts", require: "./dist/cjs/index.js", default: "./esm/index.mjs" } } }),
+    );
+    writeProjectFile(conditions, path.join("src", "cjs", "index.ts"), 'import _ from "lodash";\nexport const items = _.map([1], String);\n');
+    writeProjectFile(conditions, path.join("esm", "index.mjs"), 'import _ from "lodash";\nexport const page = (s) => _.template(s)({});\n');
+    const plain = lodashApp("");
+    rmSync(path.join(plain, "index.js"));
+    writeProjectFile(plain, "package.json", JSON.stringify({ name: "app", exports: "./lib/main.js" }));
+    writeProjectFile(plain, path.join("lib", "main.js"), greetLib);
+
+    expect(detectEntryPoints(conditions)).toEqual([path.join(conditions, "src", "cjs", "index.ts"), path.join(conditions, "esm", "index.mjs")]);
+    expect(verdicts(await analyze({ cwd: conditions }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+    expect(verdicts(await analyze({ cwd: plain }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+  });
 });
 
 describe("namedInDependencyCode", () => {

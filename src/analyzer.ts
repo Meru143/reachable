@@ -142,23 +142,13 @@ function entryCandidatesForPackage(packageDir: string): string[] {
     candidates.push(...entryFiles(main, packageDir));
   }
 
+  // "exports" is a target, conditions, or subpaths whose "." is the package itself. Every condition's target counts
+  // (require, import, node, default): any of them may run. Type declarations do not.
   const exportsField = packageJson.exports;
-  if (exportsField && typeof exportsField === "object" && !Array.isArray(exportsField)) {
-    const exportMap = exportsField as Record<string, unknown>;
-    const rootExport = exportMap["."] ?? exportMap["./index"];
-    if (typeof rootExport === "string") {
-      candidates.push(...entryFiles(rootExport, packageDir));
-    } else if (rootExport && typeof rootExport === "object") {
-      const conditionalExportMap = rootExport as Record<string, unknown>;
-      for (const key of ["require", "default"]) {
-        const conditionalExport = conditionalExportMap[key];
-        const files = typeof conditionalExport === "string" ? entryFiles(conditionalExport, packageDir) : [];
-        if (files.length > 0) {
-          candidates.push(...files);
-          break;
-        }
-      }
-    }
+  const subpaths = exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith(".")) ? (exportsField as Record<string, unknown>) : null;
+  const rootExport = subpaths ? subpaths["."] ?? subpaths["./index"] : exportsField;
+  for (const target of stringLeaves(rootExport).filter((leaf) => !/\.d\.[cm]?ts$/.test(leaf))) {
+    candidates.push(...entryFiles(target, packageDir));
   }
 
   const binField = packageJson.bin;
