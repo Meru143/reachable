@@ -28,14 +28,11 @@ function packageNodeId(packageName: string): string {
   return `pkg:${packageName}::module`;
 }
 
-/** Test files stay out of the graph, and out of the analysis, unless --include-tests is passed. Only the path inside
- * the project counts: a project that sits in a __tests__ folder is not all tests. */
+/** Test files stay out of the graph and out of the analysis. Only the path inside the project counts: a project that
+ * sits in a __tests__ folder is not all tests. */
 export function isSkippedTestFile(filePath: string, cwd: string): boolean {
   const normalized = `/${normalizeFilePath(filePath, cwd)}`;
-  return (
-    !process.argv.includes("--include-tests") &&
-    (/\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/"))
-  );
+  return /\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/");
 }
 
 function isSourceFile(filePath: string): boolean {
@@ -60,11 +57,13 @@ function addEdge(graph: CallGraph, edge: { from: string; to: string; importedFro
 
 export function buildGraph(files: string[], entryPoints: string[], cwd: string): CallGraph {
   const opaque = new Set<string>();
+  const bindings = new Map<string, Set<string>>();
   const graph: CallGraph = {
     nodes: new Map(),
     edges: [],
     entryPoints: [],
     opaque,
+    bindings,
   };
   const edgeSet = new Set<string>();
   const visitedFiles = new Set<string>();
@@ -214,6 +213,13 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
     for (const specifier of parsed.opaque ?? []) {
       if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) {
         opaque.add(packageNameFromImport(specifier));
+      }
+    }
+
+    for (const [local, specifier] of parsed.bindings ?? []) {
+      if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) {
+        const name = packageNameFromImport(specifier);
+        bindings.set(name, (bindings.get(name) ?? new Set()).add(local));
       }
     }
 

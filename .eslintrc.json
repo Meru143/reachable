@@ -19,6 +19,7 @@
   "ignorePatterns": [
     "dist",
     "coverage",
-    "test/fixtures"
+    "test/fixtures",
+    "docs/assets/render-staging"
   ]
 }

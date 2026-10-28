@@ -57,13 +57,25 @@ function entryFiles(target: string, packageDir: string): string[] {
   return file ? [file] : [];
 }
 
-function packageJsonAt(directory: string): Record<string, unknown> | null {
-  const packageJsonPath = path.join(directory, "package.json");
-  if (!existsSync(packageJsonPath)) {
+// A file or folder that cannot be read (a dangling symlink, no permission) is skipped with a warning, once per path,
+// never fatal.
+const unreadable = new Set<string>();
+function readable<T>(file: string, read: () => T): T | null {
+  try {
+    return read();
+  } catch (error) {
+    if (!unreadable.has(file)) {
+      unreadable.add(file);
+      logger.warn({ file, error: error instanceof Error ? error.message : String(error) }, "Skipping a file that cannot be read");
+    }
     return null;
   }
+}
 
-  return JSON.parse(readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
+function packageJsonAt(directory: string): Record<string, unknown> | null {
+  const packageJsonPath = path.join(directory, "package.json");
+  const text = existsSync(packageJsonPath) ? readable(packageJsonPath, () => readFileSync(packageJsonPath, "utf8")) : null;
+  return text === null ? null : (JSON.parse(text) as Record<string, unknown>);
 }
 
 function workspaceDirectories(cwd: string): string[] {
@@ -81,9 +93,9 @@ function workspaceDirectories(cwd: string): string[] {
         continue;
       }
 
-      for (const entry of readdirSync(baseDir)) {
+      for (const entry of readable(baseDir, () => readdirSync(baseDir)) ?? []) {
         const fullPath = path.join(baseDir, entry);
-        if (statSync(fullPath).isDirectory() && existsSync(path.join(fullPath, "package.json"))) {
+        if (readable(fullPath, () => statSync(fullPath))?.isDirectory() && existsSync(path.join(fullPath, "package.json"))) {
           directories.push(fullPath);
         }
       }
@@ -204,26 +216,27 @@ export function detectEntryPoints(cwd: string, explicitEntries?: string[]): stri
   return [...new Set(entryPoints)];
 }
 
-export function collectSourceFiles(cwd: string, pattern = /\.[cm]?[jt]sx?$/): string[] {
+// Files whose names match `pattern`, except in node_modules, coverage, .git, .reachable-cache and `skip` (folder names,
+// or absolute paths).
+export function collectSourceFiles(cwd: string, pattern = /\.[cm]?[jt]sx?$/, skip = ["dist"]): string[] {
   const sourceFiles: string[] = [];
-  const ignoredDirectories = new Set(["node_modules", "dist", "coverage", ".git", ".reachable-cache"]);
+  const ignoredDirectories = new Set(["node_modules", "coverage", ".git", ".reachable-cache", ...skip]);
 
   function walk(directory: string): void {
-    for (const entry of readdirSync(directory)) {
-      if (ignoredDirectories.has(entry)) {
+    for (const entry of readable(directory, () => readdirSync(directory)) ?? []) {
+      const fullPath = path.join(directory, entry);
+      if (ignoredDirectories.has(entry) || ignoredDirectories.has(fullPath)) {
         continue;
       }
 
-      const fullPath = path.join(directory, entry);
-      const stats = statSync(fullPath);
-
-      if (stats.isDirectory()) {
+      const stats = readable(fullPath, () => statSync(fullPath));
+      if (stats?.isDirectory()) {
         walk(fullPath);
         continue;
       }
 
       // Regular files only: reading a named pipe would block.
-      if (stats.isFile() && pattern.test(entry)) {
+      if (stats?.isFile() && pattern.test(entry)) {
         sourceFiles.push(fullPath);
       }
     }
@@ -421,7 +434,12 @@ function readPackageCode(cwd: string, packageName: string, version: string, impo
     return null;
   }
 
-  const manifest = packageJsonAt(packageDir) ?? {};
+  // A manifest that cannot be read hides the package's entry files, so nothing is confirmed.
+  const manifest = packageJsonAt(packageDir);
+  if (!manifest) {
+    return null;
+  }
+
   const exportsField = manifest.exports;
   const subpathMap =
     exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith("."))
@@ -608,15 +626,59 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
   };
 }
 
-// Files whose text can name a function: source files; components, templates and views, which are not parsed;
-// CoffeeScript; and extensionless files (bin/www), kept when isScript says node may run them.
-const PROJECT_FILES =
-  /\.(?:[cm]?[jt]sx?|vue|svelte|astro|marko|mdx|ejs|pug|jade|hbs|handlebars|mustache|njk|nunjucks|liquid|eta|twig|dust|swig|haml|hamlc|hjs|hogan|jst|tpl|tmpl|vash|edge|art|eco|ect|j2|jinja2?|html?|coffee|litcoffee)$|^[^.]+$/;
+// Config files: a package or function named in one can be loaded or called by that name (config.json { "engine":
+// "lodash" }, rules.json ["trim"]).
+const CONFIG_FILES = /\.(?:json5?|jsonc|ya?ml|toml|ini|env)$|^\.env(?:\.[\w.-]+)?$/;
 
-// An extensionless file node may run (bin/www, scripts/report): a shebang naming node (or nodejs, bun, deno, tsx), or no
-// shebang and code that loads modules. Not README, LICENSE, Makefile or a binary.
-function isScript(text: string): boolean {
-  return !text.includes("\0") && (text.startsWith("#!") ? /^#!.*\b(?:nodejs|node|bun|deno|tsx)\b/.test(text) : /\b(?:require|import)\b/.test(text));
+// Files whose text can name a function: source files; components, templates and views, which are not parsed;
+// CoffeeScript; extensionless files (bin/www, scripts/clean), unless they are documents, binaries or scripts for another
+// interpreter; and config files.
+const PROJECT_FILES = new RegExp(
+  String.raw`\.(?:[cm]?[jt]sx?|vue|svelte|astro|marko|mdx|ejs|pug|jade|hbs|handlebars|mustache|njk|nunjucks|liquid|eta|twig|dust|swig|haml|hamlc|hjs|hogan|jst|tpl|tmpl|vash|edge|art|eco|ect|j2|jinja2?|html?|coffee|litcoffee)$|^[^.]+$|${CONFIG_FILES.source}`,
+);
+
+// Never searched: lockfiles, which name every installed package, and reachable's own config.
+const NOT_SEARCHED = /^(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|\.?reachablerc(?:\.\w+)?|reachable\.config\.\w+)$/;
+
+// What reachable writes, a JSON report (--format json) or an advisory cache entry, wherever the cache is: it names
+// functions and packages, and loads nothing.
+const OWN_OUTPUT = /^\s*\{\s*(?:"summary"\s*:\s*\{\s*"reachable"\s*:|"fetchedAt"\s*:)/;
+
+// Extensionless files that are documents, and interpreters that do not run JavaScript (#!/bin/sh, #!/usr/bin/env python3).
+const DOCUMENT = /^(?:LICEN[CS]E|COPYING|NOTICE|AUTHORS|CHANGELOG|README)/i;
+const OTHER_INTERPRETER = /^(?:sh|bash|zsh|dash|ksh|fish|python[\w.]*|ruby|perl|php|pwsh|lua)$/;
+
+// The interpreter a shebang names: zx for #!/usr/bin/env zx, node for #!/usr/bin/env -S node --flag, "" for none.
+function interpreter(start: string): string {
+  const [command = "", ...args] = (/^#!(.*)/.exec(start)?.[1] ?? "").trim().split(/\s+/);
+  return path.basename(path.basename(command) === "env" ? args.find((arg) => !arg.startsWith("-") && !arg.includes("=")) ?? "" : command);
+}
+
+// package.json fields that pin versions (the packages they name are not loaded by those names) and reachable's own config.
+const VERSION_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+  "bundleDependencies",
+  "bundledDependencies",
+  "peerDependenciesMeta",
+  "overrides",
+  "resolutions",
+  "reachable",
+];
+
+// package.json without its version fields; scripts, config, imports and every other field are searched.
+function withoutVersionFields(text: string): string {
+  try {
+    const manifest = JSON.parse(text) as Record<string, unknown>;
+    for (const field of VERSION_FIELDS) {
+      delete manifest[field];
+    }
+    return JSON.stringify(manifest);
+  } catch {
+    return text;
+  }
 }
 
 // The first 8 KB of a file: enough to rule out a binary (a NUL byte) or another interpreter's script before reading it.
@@ -634,47 +696,96 @@ function fileStart(file: string): string {
 // Stream such files if real projects keep source or templates that large.
 const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
 
-// Which of `symbols` a project file mentions, as raw text, reachable from an entry point or not: every file
-// collectSourceFiles finds (test files left out, as in the graph), components, templates and extensionless scripts, and
-// the graph's own files (an extensionless bin, dist/ files an entry imports). Routes loaded with fs.readdirSync and
-// require(file) never join the graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide
-// calls from it, and a file the parser cannot read still counts. An extensionless file is first judged from its start,
-// so a binary is never read whole. One pass for all symbols, stopping once each is found.
-export function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[], maxBytes = MAX_PROJECT_FILE_BYTES): Set<string> {
+export type ProjectSearch = { mentioned: Set<string>; opaque: Set<string> };
+
+// The project's files read as text, reachable from an entry point or not: every file collectSourceFiles finds with
+// PROJECT_FILES, dist/ included (test files, lockfiles and folders in `skip` left out), and the graph's own files.
+// `mentioned`: which of `symbols` any of them names. Routes loaded with fs.readdirSync and require(file) never join the
+// graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from it, a config file
+// can name the function a computed call picks (rules.json ["trim"]), and a file the parser cannot read still counts.
+// `opaque`: which of `packages` a file the parser does not read uses in a way its calls cannot show: a config file that
+// names the package as a value ("engine": "lodash"), and, in a file read only as text (a component, template, view,
+// extensionless script or dist/ file the graph does not reach), a member read through a computed name on a name the
+// project binds the package to (_[this.format]) or the package's name in a string a module path is built from
+// (`lodash/${name}`, 'lodash/' + name). An extensionless file is first judged from its start, so a binary is never read
+// whole. One pass, stopping once every symbol is found.
+export function searchProject(
+  cwd: string,
+  graph: CallGraph,
+  symbols: string[],
+  packages: string[],
+  skip: string[] = [],
+  maxBytes = MAX_PROJECT_FILE_BYTES,
+): ProjectSearch {
   const graphFiles = new Set(
     [...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
   );
-  const files = new Set([...graphFiles, ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file, cwd))]);
-  const name = new RegExp(String.raw`(?<![\w$])(${symbols.map(escapeRegExp).join("|")})(?![\w$])`, "g");
-  const found = new Set<string>();
-  for (const file of files) {
-    const extensionless = path.extname(file) === "" && !graphFiles.has(file);
-    if (extensionless) {
-      const start = fileStart(file);
-      if (start.includes("\0") || (start.startsWith("#!") && !isScript(start))) {
+  const searched = collectSourceFiles(cwd, PROJECT_FILES, skip).filter((file) => !isSkippedTestFile(file, cwd));
+  const mention = new RegExp(String.raw`(?<![\w$])(${symbols.map(escapeRegExp).join("|")})(?![\w$])`, "g");
+  // In a config file a name joined by a hyphen is part of another word (prefer-template, my-template-app).
+  const configMention = new RegExp(String.raw`(?<![\w$-])(${symbols.map(escapeRegExp).join("|")})(?![\w$-])`, "g");
+  const names = packages.map(escapeRegExp).join("|");
+  // Not part of another package's name (lodash-es, @types/lodash, lodash.template); lodash/fp names lodash.
+  const value = new RegExp(String.raw`(?<![\w.~@/-])(${names})(?![\w~-]|\.[\w~-])`, "g");
+  const pathText = new RegExp(String.raw`(['"\x60])(${names})(?:\/\1|\/?\$\{)`, "g");
+  // import lo from "lodash", const lo = require("lodash"): a name a text-only file binds a package to itself. Anchored at
+  // the start of a name, so a long run of word characters or spaces in a bundle does not backtrack.
+  const imported = /(?<![\w$])([\w$]+)(?:\s*=\s*require\s*\(\s*|\s+from\s*)['"]((?:@[\w.~-]+\/)?[\w.~-]+)(?:\/[^'"]*)?['"]/g;
+  const mentioned = new Set<string>();
+  const opaque = new Set<string>();
+  for (const file of new Set([...graphFiles, ...searched])) {
+    if (NOT_SEARCHED.test(path.basename(file))) {
+      continue;
+    }
+
+    const parsed = graphFiles.has(file);
+    const config = CONFIG_FILES.test(path.basename(file));
+    if (!parsed && !config && path.extname(file) === "") {
+      const start = DOCUMENT.test(path.basename(file)) ? null : readable(file, () => fileStart(file));
+      if (start === null || start.includes("\0") || OTHER_INTERPRETER.test(interpreter(start))) {
         continue;
       }
     }
 
-    if (statSync(file).size > maxBytes) {
-      return new Set(symbols);
+    const size = readable(file, () => statSync(file).size);
+    if (size !== null && size > maxBytes) {
+      return { mentioned: new Set(symbols), opaque };
     }
 
-    const text = decodeEscapes(readFileSync(file, "utf8"));
-    if (extensionless && !isScript(text)) {
+    const raw = size === null ? null : readable(file, () => readFileSync(file, "utf8"));
+    if (raw === null || (config && OWN_OUTPUT.test(raw))) {
       continue;
     }
 
-    for (const match of text.matchAll(name)) {
-      found.add(match[1]);
+    const text = decodeEscapes(path.basename(file) === "package.json" ? withoutVersionFields(raw) : raw);
+    for (const match of text.matchAll(config ? configMention : mention)) {
+      mentioned.add(match[1]);
     }
 
-    if (found.size === symbols.length) {
+    if (packages.length > 0 && config) {
+      for (const match of text.matchAll(value)) {
+        opaque.add(match[1]);
+      }
+    } else if (packages.length > 0 && !parsed) {
+      const local = [...text.matchAll(imported)];
+      for (const name of packages) {
+        const bound = [...(graph.bindings?.get(name) ?? []), ...local.filter((match) => match[2] === name).map((match) => match[1])];
+        if (bound.length > 0 && new RegExp(String.raw`(?<![\w$.])(?:${bound.map(escapeRegExp).join("|")})\s*(?:\?\.\s*)?\[`).test(text)) {
+          opaque.add(name);
+        }
+      }
+
+      for (const match of text.matchAll(pathText)) {
+        opaque.add(match[2]);
+      }
+    }
+
+    if (mentioned.size === symbols.length) {
       break;
     }
   }
 
-  return found;
+  return { mentioned, opaque };
 }
 
 // ponytail: one pass over the installed packages' JavaScript, capped at 256 MB read; past the cap the would-be
@@ -703,9 +814,11 @@ export function namedInDependencyCode(cwd: string, names: string[], maxBytes = M
   const root = realpathSync(cwd);
   let bytes = 0;
 
-  // A link into the project is a workspace, whose code the graph reads; a link out of it is code this search skips.
+  // A link into the project is a workspace, whose code the graph reads; a link out of it is code this search skips. A
+  // dangling link holds no code.
   const linksIntoProject = (link: string): boolean => {
-    const relative = path.relative(root, realpathSync(link));
+    const target = readable(link, () => realpathSync(link));
+    const relative = target === null ? "" : path.relative(root, target);
     return !relative.startsWith("..") && !path.isAbsolute(relative);
   };
 
@@ -825,21 +938,25 @@ export async function analyze(options: AnalyzeOptions): Promise<AnalyzeResult> {
     }
   }
 
-  // Last, for what is still UNREACHABLE: a project file using the package in a way calls cannot show (the parser's
-  // opaque specifiers), then each search once for all of them, a mention of the function anywhere in the project and
-  // another package's code naming the package.
+  // Last, for what is still UNREACHABLE: a parsed file using the package in a way calls cannot show (the parser's
+  // opaque specifiers), then each search once for all of them: the project's files read as text (a mention of the
+  // function, or a use of the package in a file the parser does not read), and another package's code naming the package.
   const symbolOf = (result: ReachabilityResult): string => result.advisory.exportedSymbol ?? "";
-  const opaque = (result: ReachabilityResult): boolean => graph.opaque?.has(result.advisory.package) ?? false;
-  const unreachable = results.filter((result) => result.status === "UNREACHABLE" && !opaque(result));
-  const mentioned = unreachable.length > 0 ? mentionedInProject(cwd, graph, [...new Set(unreachable.map(symbolOf))]) : new Set<string>();
-  const candidates = [...new Set(unreachable.filter((result) => !mentioned.has(symbolOf(result))).map((result) => result.advisory.package))];
+  const unreachable = results.filter((result) => result.status === "UNREACHABLE" && !graph.opaque?.has(result.advisory.package));
+  const { mentioned, opaque } =
+    unreachable.length > 0
+      ? searchProject(cwd, graph, [...new Set(unreachable.map(symbolOf))], [...new Set(unreachable.map((result) => result.advisory.package))], [path.resolve(cacheDir)])
+      : { mentioned: new Set<string>(), opaque: new Set<string>() };
+  const unresolved = (result: ReachabilityResult): boolean =>
+    Boolean(graph.opaque?.has(result.advisory.package)) || opaque.has(result.advisory.package) || mentioned.has(symbolOf(result));
+  const candidates = [...new Set(unreachable.filter((result) => !unresolved(result)).map((result) => result.advisory.package))];
   const named = candidates.length > 0 ? namedInDependencyCode(cwd, candidates) : new Set<string>();
   const checked = results.map((result): ReachabilityResult => {
     if (result.status !== "UNREACHABLE") {
       return result;
     }
 
-    if (opaque(result) || mentioned.has(symbolOf(result))) {
+    if (unresolved(result)) {
       return { ...result, status: "UNKNOWN", reason: "unresolved-reference" };
     }
 

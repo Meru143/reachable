@@ -1,3 +1,0 @@
-[36mPath 1[39m
-[32msrc/index.ts::module[39m
-  [32mpkg:lodash::module[39m
