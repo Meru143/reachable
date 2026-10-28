@@ -434,7 +434,12 @@ function readPackageCode(cwd: string, packageName: string, version: string, impo
     return null;
   }
 
-  const manifest = packageJsonAt(packageDir) ?? {};
+  // A manifest that cannot be read hides the package's entry files, so nothing is confirmed.
+  const manifest = packageJsonAt(packageDir);
+  if (!manifest) {
+    return null;
+  }
+
   const exportsField = manifest.exports;
   const subpathMap =
     exportsField && typeof exportsField === "object" && Object.keys(exportsField).some((key) => key.startsWith("."))

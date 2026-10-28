@@ -1082,6 +1082,16 @@ describe("analyzer", () => {
     }
     warn.mockRestore();
   });
+
+  it("keeps a function unconfirmed when the package's own manifest cannot be read", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', {}, null);
+    // Without its manifest the package's entry files are unknown: an index.js that exports the function confirms nothing.
+    writeProjectFile(cwd, path.join("node_modules", "lodash", "index.js"), installedLodash);
+    mkdirSync(path.join(cwd, "node_modules", "lodash", "package.json"), { recursive: true });
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "symbol-unconfirmed"]]);
+  });
 });
 
 describe("namedInDependencyCode", () => {
