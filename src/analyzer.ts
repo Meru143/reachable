@@ -74,11 +74,8 @@ function readable<T>(file: string, read: () => T): T | null {
 
 function packageJsonAt(directory: string): Record<string, unknown> | null {
   const packageJsonPath = path.join(directory, "package.json");
-  if (!existsSync(packageJsonPath)) {
-    return null;
-  }
-
-  return JSON.parse(readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
+  const text = existsSync(packageJsonPath) ? readable(packageJsonPath, () => readFileSync(packageJsonPath, "utf8")) : null;
+  return text === null ? null : (JSON.parse(text) as Record<string, unknown>);
 }
 
 function workspaceDirectories(cwd: string): string[] {
@@ -96,7 +93,7 @@ function workspaceDirectories(cwd: string): string[] {
         continue;
       }
 
-      for (const entry of readdirSync(baseDir)) {
+      for (const entry of readable(baseDir, () => readdirSync(baseDir)) ?? []) {
         const fullPath = path.join(baseDir, entry);
         if (readable(fullPath, () => statSync(fullPath))?.isDirectory() && existsSync(path.join(fullPath, "package.json"))) {
           directories.push(fullPath);

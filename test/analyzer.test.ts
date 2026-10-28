@@ -1066,6 +1066,22 @@ describe("analyzer", () => {
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ file: path.join(cwd, "dangling.js") }), "Skipping a file that cannot be read");
     warn.mockRestore();
   });
+
+  it("skips a workspace folder or manifest it cannot read with a warning instead of failing", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "index.js", workspaces: ["packages/*", "apps/*"], dependencies: { lodash: "4.17.20" } }));
+    // A workspace glob over a file (ENOTDIR), and a workspace whose package.json is a folder (EISDIR).
+    writeProjectFile(cwd, "packages", "not a folder\n");
+    mkdirSync(path.join(cwd, "apps", "web", "package.json"), { recursive: true });
+    const warn = vi.spyOn(logger, "warn");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+    for (const file of [path.join(cwd, "packages"), path.join(cwd, "apps", "web", "package.json")]) {
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ file }), "Skipping a file that cannot be read");
+    }
+    warn.mockRestore();
+  });
 });
 
 describe("namedInDependencyCode", () => {
