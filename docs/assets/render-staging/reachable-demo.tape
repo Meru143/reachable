@@ -2,8 +2,8 @@
 # demo/cli-fixture (src/index.ts calls _.template, lodash 4.17.20 installed) with an empty advisory cache. Nothing is
 # trimmed or staged, so the output follows OSV's current advisories.
 #
-# Render from docs/assets/render-staging, after `npm ci` in demo/cli-fixture and, at the repository root,
-# `npm pack --pack-destination docs/assets/render-staging/out`:
+# Render from docs/assets/render-staging, after `npm ci` in demo/cli-fixture and, at the repository root (npm pack
+# does not create the folder), `mkdir -p docs/assets/render-staging/out && npm pack --pack-destination docs/assets/render-staging/out`:
 #   vhs reachable-demo.tape
 #   ffmpeg -i out/reachable-demo.mp4 -vf "fps=12,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" out/reachable-demo.gif
 # On Windows, run vhs from PowerShell, so that its bash is WSL's (ttyd shows nothing from Git Bash); WSL needs node and

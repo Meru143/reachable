@@ -726,8 +726,9 @@ export function searchProject(
   // Not part of another package's name (lodash-es, @types/lodash, lodash.template); lodash/fp names lodash.
   const value = new RegExp(String.raw`(?<![\w.~@/-])(${names})(?![\w~-]|\.[\w~-])`, "g");
   const pathText = new RegExp(String.raw`(['"\x60])(${names})(?:\/\1|\/?\$\{)`, "g");
-  // import lo from "lodash", const lo = require("lodash"): a name a text-only file binds a package to itself.
-  const imported = /([\w$]+)\s*(?:=\s*require\s*\(\s*|\s+from\s*)['"]((?:@[\w.~-]+\/)?[\w.~-]+)(?:\/[^'"]*)?['"]/g;
+  // import lo from "lodash", const lo = require("lodash"): a name a text-only file binds a package to itself. Anchored at
+  // the start of a name, so a long run of word characters or spaces in a bundle does not backtrack.
+  const imported = /(?<![\w$])([\w$]+)(?:\s*=\s*require\s*\(\s*|\s+from\s*)['"]((?:@[\w.~-]+\/)?[\w.~-]+)(?:\/[^'"]*)?['"]/g;
   const mentioned = new Set<string>();
   const opaque = new Set<string>();
   for (const file of new Set([...graphFiles, ...searched])) {
