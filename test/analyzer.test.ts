@@ -10,7 +10,7 @@ import {
   analyze,
   collectSourceFiles,
   detectEntryPoints,
-  mentionedInProject,
+  searchProject,
   namedInDependencyCode,
 } from "../src/analyzer.js";
 import { buildGraph } from "../src/graph/builder.js";
@@ -955,6 +955,117 @@ describe("analyzer", () => {
     expect(verdicts(await analyze({ cwd: conditions }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
     expect(verdicts(await analyze({ cwd: plain }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
   });
+
+  // Each regression below is named after the verification fixture of 1.0.14 that gave a false UNREACHABLE.
+  const trimAdvisory = textAdvisory("GHSA-29mw-wpgm-hmr9", "ReDoS via the `trim` function.", "MODERATE");
+  const trimOnly = [
+    ["GHSA-29mw-wpgm-hmr9", "trim", "UNKNOWN", "unresolved-reference"],
+    ["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined],
+  ];
+
+  it.each([
+    ["a wrapper (h-wrap-computed)", 'const _ = require("lodash");\nmodule.exports = (op, text) => String(_(text)[op]());\n'],
+    ["a chain it reassigns (h-chain-computed)", 'const _ = require("lodash");\nconst rules = require("./rules");\nlet chain = _.chain(" x ");\nfor (const rule of rules) chain = chain[rule]();\n'],
+    ["a module path built from its name (h-tpl-require)", 'const _ = require("lodash");\nconst sanitize = require(`lodash/${process.env.SANITIZE}`);\n_.map([1], sanitize);\n'],
+    ["an import() path built from its name (h-tpl-import)", 'import _ from "lodash";\nconst { default: clean } = await import(`lodash/${process.env.SANITIZE}.js`);\n_.map([1], clean);\n'],
+  ])("reports UNKNOWN (unresolved-reference) when the app picks a function by a computed name through %s", async (_label, source) => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    expect(verdicts(await analyze({ cwd: lodashApp(source) }))).toEqual(unresolved);
+  });
+
+  it("searches dist/ files no entry point imports, such as routes loaded with fs.readdirSync (h-dist-dyn)", async () => {
+    mockOsv({ lodash: [trimAdvisory, templateAdvisory] });
+    const cwd = lodashApp("");
+    rmSync(path.join(cwd, "index.js"));
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "dist/index.js" }));
+    writeProjectFile(
+      cwd,
+      path.join("dist", "index.js"),
+      'const fs = require("fs");\nconst _ = require("lodash");\nconst routes = {};\nfor (const file of fs.readdirSync(__dirname + "/routes")) routes[file] = require(__dirname + "/routes/" + file);\nconsole.log(_.map(Object.keys(routes), String));\n',
+    );
+    writeProjectFile(cwd, path.join("dist", "routes", "clean.js"), 'const _ = require("lodash");\nmodule.exports = (input) => _.trim(input);\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(trimOnly);
+  });
+
+  it.each([
+    ["config.json", '{ "engine": "lodash" }\n'],
+    ["config/engines.yaml", "templates:\n  engine: lodash\n"],
+    ["settings.toml", 'engine = "lodash/template"\n'],
+    [".env", "TEMPLATE_ENGINE=lodash\n"],
+    ["package.json", JSON.stringify({ name: "app", main: "index.js", config: { engine: "lodash" }, dependencies: { lodash: "4.17.20", tplkit: "1.0.0" } })],
+  ])("reports UNKNOWN (unresolved-reference) when %s names the package a dependency loads by name (h-dep-config)", async (file, text) => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconst render = require("tplkit");\nconsole.log(_.map([1], String), render(process.env.TEMPLATE_ENGINE, "Hi"));\n', {
+      "node_modules/tplkit": { version: "1.0.0" },
+    });
+    writeProjectFile(cwd, path.join("node_modules", "tplkit", "package.json"), JSON.stringify({ name: "tplkit", version: "1.0.0", main: "index.js" }));
+    writeProjectFile(cwd, path.join("node_modules", "tplkit", "index.js"), "module.exports = (engine, text) => require(engine).template(text)({});\n");
+    writeProjectFile(cwd, file, text);
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(unresolved);
+  });
+
+  it("reads config files for function names, and not for other packages' names, lockfiles, version fields or its own files", async () => {
+    mockOsv({ lodash: [trimAdvisory, templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconst rules = require("./rules.json");\nmodule.exports = (s) => rules.reduce((value, rule) => value, _.toString(s));\n');
+    // The function a computed call may pick (h-chain-computed's rules.json).
+    writeProjectFile(cwd, "rules.json", '["trim", "upperFirst"]\n');
+    // Not a use of lodash or a mention of template: other packages, a hyphenated rule, version pins, reachable's own files.
+    writeProjectFile(cwd, ".eslintrc.json", JSON.stringify({ plugins: ["lodash-es", "@types/lodash"], rules: { "prefer-template": "error" }, settings: { pkg: "lodash.debounce" } }));
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app-template", main: "index.js", dependencies: { lodash: "4.17.20" }, overrides: { lodash: "4.17.20" } }));
+    writeProjectFile(cwd, ".reachablerc.json", JSON.stringify({ devPackages: ["template"] }));
+    writeProjectFile(cwd, "reachable.json", JSON.stringify({ summary: { reachable: 0, unreachable: 1, unknown: 0 }, results: [{ advisory: { package: "lodash", exportedSymbol: "template" } }] }, null, 2));
+    // A cache entry left from an earlier cache.dir.
+    writeProjectFile(cwd, path.join(".cache", "old", "entry.json"), JSON.stringify({ fetchedAt: "2026-01-01T00:00:00.000Z", advisories: [templateAdvisory] }, null, 2));
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(trimOnly);
+  });
+
+  it("reads extensionless scripts that another runner starts, but not other interpreters' scripts or documents (h-zx-script)", async () => {
+    mockOsv({ lodash: [trimAdvisory, templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconsole.log(_.map([1, 2, 3], (n) => n * 2));\n');
+    writeProjectFile(cwd, path.join("scripts", "clean"), "#!/usr/bin/env zx\nconst _ = require('lodash');\necho(_.trim(argv.name));\n");
+    writeProjectFile(cwd, path.join("scripts", "render"), "#!/usr/bin/env python3\nprint(template)\n");
+    writeProjectFile(cwd, path.join("scripts", "deploy"), "#!/usr/bin/env -S bash -e\necho template\n");
+    writeProjectFile(cwd, "README", "Uses the template function.\n");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(trimOnly);
+  });
+
+  it.each([
+    ["a name the project's code binds it to (h-vue-computed)", "<script>\nimport _ from 'lodash';\nexport default { computed: { formatted() { return _[this.format](this.value); } } };\n</script>\n"],
+    ["a name the component binds it to", "<script>\nimport lo from 'lodash';\nexport default { computed: { formatted() { return lo[this.format](this.value); } } };\n</script>\n"],
+    ["a module path built from its name", "<script setup>\nconst { default: format } = await import(`lodash/${props.format}.js`);\n</script>\n"],
+  ])("reports UNKNOWN (unresolved-reference) when a component picks a function through %s", async (_label, component) => {
+    // trim, not template: every single-file component mentions <template>.
+    mockOsv({ lodash: [trimAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconsole.log(_.map([1, 2], String));\n');
+    writeProjectFile(cwd, path.join("src", "components", "Formatted.vue"), `<template><span>{{ formatted }}</span></template>\n${component}`);
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-29mw-wpgm-hmr9", "trim", "UNKNOWN", "unresolved-reference"]]);
+  });
+
+  it("does not count a computed read on other names in a component", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\nconsole.log(_.map([1, 2], String));\n');
+    writeProjectFile(cwd, path.join("src", "List.vue"), "<script>\nimport _ from 'lodash';\nexport default { computed: { rows() { return _.map(this.items, (item, i) => this.items[i]); } } };\n</script>\n");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("skips a dangling symlink with a warning instead of failing (h-brokenlink)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    symlinkSync("does-not-exist.js", path.join(cwd, "dangling.js"), "file");
+    symlinkSync(path.join(cwd, "does-not-exist"), path.join(cwd, "node_modules", "gone"), "junction");
+    const warn = vi.spyOn(logger, "warn");
+
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ file: path.join(cwd, "dangling.js") }), "Skipping a file that cannot be read");
+    warn.mockRestore();
+  });
 });
 
 describe("namedInDependencyCode", () => {
@@ -989,6 +1100,9 @@ describe("namedInDependencyCode", () => {
     const names = ["lodash", "chalk", "debug", "minimist", "qs", "express", "semver", "react"];
 
     expect(namedInDependencyCode(cwd, names)).toEqual(new Set(["lodash", "chalk", "debug"]));
+    // A dangling link holds no code to search.
+    symlinkSync(path.join(cwd, "missing"), path.join(cwd, "node_modules", "gone"), "junction");
+    expect(namedInDependencyCode(cwd, names)).toEqual(new Set(["lodash", "chalk", "debug"]));
     // Past the byte limit nothing is ruled out.
     expect(namedInDependencyCode(cwd, names, 10)).toBeNull();
 
@@ -1017,24 +1131,24 @@ describe("namedInDependencyCode", () => {
   });
 });
 
-describe("mentionedInProject", () => {
+describe("searchProject", () => {
   it("skips an extensionless binary from its first bytes, and counts a file over the size limit as naming every symbol", () => {
     const cwd = makeTempDir();
     writeProjectFile(cwd, "index.js", "module.exports = 1;\n");
     writeProjectFile(cwd, path.join("bin", "tool"), `\u007fELF\0${"x".repeat(200)} require template\n`);
     const symbols = ["template", "trim"];
 
-    expect(mentionedInProject(cwd, buildGraph([], [], cwd), symbols, 100)).toEqual(new Set());
+    expect(searchProject(cwd, buildGraph([], [], cwd), symbols, [], [], 100).mentioned).toEqual(new Set());
     writeProjectFile(cwd, path.join("views", "report.html"), `<p>${"x".repeat(200)}</p>\n`);
-    expect(mentionedInProject(cwd, buildGraph([], [], cwd), symbols, 100)).toEqual(new Set(symbols));
+    expect(searchProject(cwd, buildGraph([], [], cwd), symbols, [], [], 100).mentioned).toEqual(new Set(symbols));
   });
 
   it("decodes escapes before searching, except one written after an escaped backslash", () => {
     const cwd = makeTempDir();
     writeProjectFile(cwd, "literal.js", 'module.exports = "\\\\u{74}emplate";\n');
 
-    expect(mentionedInProject(cwd, buildGraph([], [], cwd), ["template"])).toEqual(new Set());
+    expect(searchProject(cwd, buildGraph([], [], cwd), ["template"], []).mentioned).toEqual(new Set());
     writeProjectFile(cwd, "call.js", 'module.exports = (_) => _.temp\\u{0000006c}ate("x");\n');
-    expect(mentionedInProject(cwd, buildGraph([], [], cwd), ["template"])).toEqual(new Set(["template"]));
+    expect(searchProject(cwd, buildGraph([], [], cwd), ["template"], []).mentioned).toEqual(new Set(["template"]));
   });
 });

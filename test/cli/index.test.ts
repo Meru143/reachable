@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Each test imports the whole CLI afresh (tree-sitter, the TypeScript resolver), which can take seconds on a cold run.
@@ -38,6 +42,19 @@ describe("cli/index", { timeout: 30_000 }, () => {
 
     expect(stderr).toMatch(/^error: /);
     expect(process.exitCode).toBe(2);
+  });
+
+  it("exits 2 on a config with a key it does not know, naming the file and the key", async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "reachable-cli-"));
+    writeFileSync(path.join(cwd, ".reachablerc.json"), JSON.stringify({ failon: "low" }));
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    const { stderr } = await run(["scan", "--cwd", cwd]);
+    rmSync(cwd, { recursive: true, force: true });
+
+    expect(stderr).toContain(`Invalid configuration in ${path.join(cwd, ".reachablerc.json")}`);
+    expect(stderr).toContain('Unrecognized key: "failon"');
+    expect(exit).toHaveBeenCalledWith(2);
   });
 
   it("registers the root program metadata and subcommands", async () => {

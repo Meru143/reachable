@@ -29,9 +29,11 @@ export interface ParsedModule {
   imports: ImportRef[];
   exports: ExportRef[];
   calls: CallRef[];
-  /** With `opaque: true`: module specifiers the module uses in ways calls cannot show (handed on whole, indexed by a
-   * computed name, or a package name spelled as a plain string). */
+  /** With `opaque: true`: module specifiers the module uses in ways calls cannot show (handed on whole, a member read
+   * through a computed name on it or on a value made from it, or a package name spelled as a string). */
   opaque?: string[];
+  /** With `opaque: true`: the local names the module binds a module to, as [name, specifier]. */
+  bindings?: Array<[string, string]>;
   /** With `usedNames: true`: names the module uses beyond declaring them or binding them to an export. */
   usedNames?: Set<string>;
 }

@@ -86,7 +86,7 @@ describe("utils/packagelock", () => {
     ]);
   });
 
-  it("filters dev dependencies from config unless include-dev is set", () => {
+  it("filters the dev dependencies the config names", () => {
     const cwd = makeTempDir();
     writeFileSync(
       path.join(cwd, ".reachablerc.json"),

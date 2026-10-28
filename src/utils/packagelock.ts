@@ -60,15 +60,7 @@ function hasPackagesMap(lockfile: PackageLock): boolean {
 }
 
 function shouldIncludePackage(name: string, isDevPackage: boolean, config: ReachableConfig): boolean {
-  if (process.argv.includes("--include-dev")) {
-    return true;
-  }
-
-  if (config.devPackages.includes(name)) {
-    return false;
-  }
-
-  return !isDevPackage;
+  return !isDevPackage && !config.devPackages.includes(name);
 }
 
 // "node_modules/foo" -> foo, "node_modules/a/node_modules/@s/b" -> @s/b; null for the root and folders.

@@ -7,7 +7,7 @@ import {
   extractDynamicImports,
   extractESMImports,
   extractExports,
-  extractOpaqueSpecifiers,
+  extractModuleUses,
   extractRequireCalls,
   extractUsedNamesWithLanguage,
 } from "../../src/parser/javascript.js";
@@ -118,7 +118,7 @@ describe("parser/javascript", () => {
   });
 
   it("does not count uses of a module the call graph sees as opaque", () => {
-    const opaque = extractOpaqueSpecifiers(
+    const { opaque } = extractModuleUses(
       parse(`
         const _ = require("lodash");
         import fp from "lodash/fp";
@@ -144,6 +144,13 @@ describe("parser/javascript", () => {
         import("lodash");
         const wrapped = await (import("lodash"));
         wrapped.map([1], String);
+        const sorted = _.sortBy([{ age: 1 }], "age");
+        sorted[0].age;
+        const render = _.template("x");
+        render({ name: "x" });
+        res.json({ items: _.map([1], String), wrapper: _([1]) });
+        const [evens] = _.partition([1, 2], (n) => n % 2 === 0);
+        evens.length;
       `),
     );
 
@@ -188,7 +195,27 @@ describe("parser/javascript", () => {
     ["its name, to a dependency (h-computed-spec)", 'const render = require("tplkit");\nrender("lodash", "Hi <%= n %>");'],
     ["its name, to createRequire (h-createrequire)", 'const load = createRequire(import.meta.url);\nload("lodash/template");'],
     ["its name in a template literal", "const name = `lodash`;\nawait import(name);"],
+    ["a wrapper's computed member (h-wrap-computed)", 'const _ = require("lodash");\nres.end(String(_(text)[op]()));'],
+    ["a chain reassigned through a computed member (h-chain-computed)", 'const _ = require("lodash");\nlet chain = _.chain(input);\nfor (const rule of rules) chain = chain[rule]();'],
+    ["a computed member of a new instance", 'const _ = require("lodash");\nconst lo = _.runInContext();\nlo[name]("x");'],
+    ["a computed member of a value through a fallback", 'const _ = require("lodash");\nconst lo = cached || _.runInContext();\nlo[name]("x");'],
+    ["a computed member of a destructured value", 'const { chain } = require("lodash");\nchain(x)[op]();'],
+    ["a computed member of a named import", 'import { chain } from "lodash";\nchain(x)[op]();'],
+    ["a computed member of a member", 'import _ from "lodash";\n_.prototype[op].call(_(x));'],
+    ["a path built from its name (h-tpl-require)", "const sanitize = require(`lodash/${config.sanitize}`);"],
+    ["an import() path built from its name (h-tpl-import)", "const { default: clean } = await import(`lodash/${name}.js`);"],
+    ["a path joined to its name", 'const fn = require("lodash/" + name);'],
   ])("lists a module used through %s as opaque", (_label, source) => {
-    expect(extractOpaqueSpecifiers(parse(source))).toEqual(expect.arrayContaining([expect.stringMatching(/^lodash(\/template)?$/)]));
+    expect(extractModuleUses(parse(source)).opaque).toEqual(expect.arrayContaining([expect.stringMatching(/^lodash(\/.*)?$/)]));
+  });
+
+  it("lists the names a file binds a module to, not the values it takes from it", () => {
+    const { bindings } = extractModuleUses(
+      parse('const _ = require("lodash");\nimport lo, { chain } from "lodash";\nimport * as fp from "lodash/fp";\nconst lib = _;\nconst c = _.chain([1]);\n'),
+    );
+
+    expect(bindings).toEqual(expect.arrayContaining([["_", "lodash"], ["lo", "lodash"], ["fp", "lodash/fp"], ["lib", "lodash"]]));
+    expect(bindings.map(([name]) => name)).not.toContain("chain");
+    expect(bindings.map(([name]) => name)).not.toContain("c");
   });
 });

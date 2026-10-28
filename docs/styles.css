@@ -247,6 +247,7 @@ h2 {
   line-height: 1.7;
 }
 
+.card a,
 .site-footer a {
   color: var(--ink);
   text-decoration: underline;

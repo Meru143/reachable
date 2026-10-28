@@ -19,4 +19,7 @@ export interface CallGraph {
   entryPoints: string[];
   /** Packages a project file uses in ways its calls cannot show (ParsedModule.opaque): no verdict about them is UNREACHABLE. */
   opaque?: Set<string>;
+  /** Local names project files bind each package to (const _ = require("lodash")): files that are only searched as text
+   * are checked for a member read through a computed name on them (_[name]). */
+  bindings?: Map<string, Set<string>>;
 }

@@ -9,6 +9,7 @@ import {
   loadConfigSync,
 } from "../../src/config/loader.js";
 import { getDefaultConfig } from "../../src/config/types.js";
+import { ConfigError } from "../../src/utils/errors.js";
 
 const createdDirs: string[] = [];
 
@@ -69,5 +70,17 @@ describe("config/loader", () => {
 
     await expect(loadConfig(cwd)).resolves.toEqual(expected);
     expect(loadConfigSync(cwd)).toEqual(expected);
+  });
+
+  it.each([
+    ["a mistyped key", { entries: ["src/index.ts"] }, 'Unrecognized key: "entries"'],
+    ["a mistyped cache key", { cache: { ttl: 12 } }, 'Unrecognized key: "ttl"'],
+  ])("rejects %s, naming the file and the key", async (_label, config, problem) => {
+    const cwd = makeTempDir();
+    writeFileSync(path.join(cwd, ".reachablerc.json"), JSON.stringify({ $schema: "https://example.com/schema.json", ...config }), "utf8");
+
+    await expect(loadConfig(cwd)).rejects.toThrow(ConfigError);
+    await expect(loadConfig(cwd)).rejects.toThrow(problem);
+    expect(() => loadConfigSync(cwd)).toThrow(path.join(cwd, ".reachablerc.json"));
   });
 });

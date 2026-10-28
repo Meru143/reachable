@@ -1,26 +1,30 @@
 // cosmiconfig loader for .reachablerc.
 import { cosmiconfig, cosmiconfigSync } from "cosmiconfig";
+import { z } from "zod";
 
+import { ConfigError } from "../utils/errors.js";
 import { ConfigSchema, getDefaultConfig, type ReachableConfig } from "./types.js";
 
-export async function loadConfig(cwd: string): Promise<ReachableConfig> {
-  const explorer = cosmiconfig("reachable");
-  const result = await explorer.search(cwd);
+type SearchResult = { config: unknown; filepath: string } | null;
 
+// An invalid config stops the scan (exit code 2), naming the file and each problem.
+function validate(result: SearchResult): ReachableConfig {
   if (!result) {
     return getDefaultConfig();
   }
 
-  return ConfigSchema.parse(result.config);
+  const parsed = ConfigSchema.safeParse(result.config);
+  if (!parsed.success) {
+    throw new ConfigError(`Invalid configuration in ${result.filepath}:\n${z.prettifyError(parsed.error)}`);
+  }
+
+  return parsed.data;
+}
+
+export async function loadConfig(cwd: string): Promise<ReachableConfig> {
+  return validate(await cosmiconfig("reachable").search(cwd));
 }
 
 export function loadConfigSync(cwd: string): ReachableConfig {
-  const explorer = cosmiconfigSync("reachable");
-  const result = explorer.search(cwd);
-
-  if (!result) {
-    return getDefaultConfig();
-  }
-
-  return ConfigSchema.parse(result.config);
+  return validate(cosmiconfigSync("reachable").search(cwd));
 }

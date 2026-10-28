@@ -164,7 +164,7 @@ function exportName(node: Parser.SyntaxNode | null): string | null {
   return node ? unescapeString(node.type === "string" ? node.text.slice(1, -1) : node.text) : null;
 }
 
-// The member a member access reads by name: map for _.map and _["map"], none for _[name].
+// The member a member access reads by name: map for _.map and _["map"], 0 for list[0], none for _[name].
 function memberName(access: Parser.SyntaxNode): string | null {
   // A property may spell its name with escapes (.th\u{65}n).
   if (access.type === "member_expression") {
@@ -174,25 +174,40 @@ function memberName(access: Parser.SyntaxNode): string | null {
 
   // An escaped key (_["temp\x6cate"]) is not a plain name: the text search for the function cannot see it.
   const index = access.type === "subscript_expression" ? access.childForFieldName("index") : null;
+  if (index?.type === "number") {
+    return index.text;
+  }
+
   return index?.type === "string" && !index.text.includes("\\") ? index.text.slice(1, -1) : null;
 }
 
+// A name to follow, and whether it holds the module itself (false) or a value made from it (true).
+type Binding = [name: Parser.SyntaxNode, derived: boolean];
+
 // What code does with a module value (require("x"), import("x"), or a name bound to one): reads or calls a member by
-// its name (_.map(), _["map"], _(x), const { map } = _), which the call graph sees; gives it another name (const lib
-// = _), which is followed; or anything else, which hands the whole module to code the graph does not follow
-// (Object.assign({}, _), app.locals.lib = _, render(_), export default _) or reads a member through a computed name
-// (_[name]).
-function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxNode {
+// its name (_.map(), _["map"]), which the call graph sees; gives it another name (const lib = _), which is followed; or
+// anything else, which hands the whole module to code the graph does not follow (Object.assign({}, _), app.locals.lib =
+// _, render(_), export default _) or reads a member through a computed name (_[name]). A value made from the module
+// (`derived`: a member, the result of calling it or a member, _(x), _.chain(x), _.runInContext(), and every name
+// assigned one, chain = chain[rule]() included) is followed the same way, except that handing it on is how a result is
+// used (console.log(_.map(list, f))): only a member read through a computed name counts, since a wrapper (_(text)[op]())
+// reaches any function that way.
+function moduleUse(node: Parser.SyntaxNode, derived = false): "named" | "opaque" | Binding[] {
   const parent = node.parent;
   switch (parent?.type) {
     case "member_expression":
     case "subscript_expression": {
-      // _.default and _["default"] are the module itself (ES module interop); obj[_] and _[name] are not named reads.
-      const name = sameNode(parent.childForFieldName("object"), node) ? memberName(parent) : null;
-      return name === null ? "opaque" : name === "default" ? moduleUse(parent) : "named";
+      // obj[_] hands the module on as a key. _.default and _["default"] are the module itself (ES module interop).
+      if (!sameNode(parent.childForFieldName("object"), node)) {
+        return derived ? "named" : "opaque";
+      }
+
+      const name = memberName(parent);
+      return name === null ? "opaque" : moduleUse(parent, derived || name !== "default");
     }
-    case undefined:
     case "call_expression":
+      return moduleUse(parent, true);
+    case undefined:
     case "expression_statement":
     case "unary_expression":
     case "type_query":
@@ -205,9 +220,12 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
     case "satisfies_expression":
     case "non_null_expression":
     case "type_assertion":
-      return moduleUse(parent);
+      return moduleUse(parent, derived);
     case "binary_expression":
-      return ["||", "&&", "??"].includes(parent.childForFieldName("operator")?.text ?? "") ? "opaque" : "named";
+      // window._ || require("lodash") hands the module on; a value goes on through the fallback.
+      return !["||", "&&", "??"].includes(parent.childForFieldName("operator")?.text ?? "") ? "named" : derived ? moduleUse(parent, true) : "opaque";
+    case "ternary_expression":
+      return !derived ? "opaque" : sameNode(parent.childForFieldName("condition"), node) ? "named" : moduleUse(parent, true);
     case "variable_declarator":
     case "assignment_expression": {
       const target = parent.childForFieldName(parent.type === "variable_declarator" ? "name" : "left");
@@ -217,30 +235,45 @@ function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxN
 
       // export const lib = _ hands it on under the new name.
       if (target.type === "identifier") {
-        return parent.parent?.parent?.type === "export_statement" ? "opaque" : target;
+        return !derived && parent.parent?.parent?.type === "export_statement" ? "opaque" : [[target, derived]];
       }
 
-      if (target.type !== "object_pattern" || target.descendantsOfType(["rest_pattern", "computed_property_name"]).length > 0) {
+      if (!derived && (target.type !== "object_pattern" || target.descendantsOfType(["rest_pattern", "computed_property_name"]).length > 0)) {
         return "opaque";
       }
 
-      // const { default: lib } = await import("x"): lib is the module.
-      const whole = target.namedChildren.find((entry) => entry.type === "pair_pattern" && exportName(entry.childForFieldName("key")) === "default");
-      const value = whole?.childForFieldName("value");
-      return !whole ? "named" : value?.type === "identifier" ? value : "opaque";
+      // ponytail: a value stored in a property (this.chain = _.chain(x)) is not followed.
+      if (target.type !== "object_pattern" && target.type !== "array_pattern") {
+        return "named";
+      }
+
+      // const { default: lib } = await import("x"): lib is the module; every other name a pattern declares holds a
+      // value taken from it (const { chain } = _, const [evens, odds] = _.partition(list, even)).
+      const whole = derived ? undefined : target.namedChildren.find((entry) => entry.type === "pair_pattern" && exportName(entry.childForFieldName("key")) === "default");
+      const module = whole?.childForFieldName("value") ?? null;
+      if (whole && module?.type !== "identifier") {
+        return "opaque";
+      }
+
+      return target
+        .descendantsOfType(["identifier", "shorthand_property_identifier_pattern"])
+        .filter((name) => name.type !== "identifier" || declares(name))
+        .map((name): Binding => [name, !sameNode(module, name)]);
     }
     default:
-      return "opaque";
+      return derived ? "named" : "opaque";
   }
 }
 
-// Module specifiers the file uses in ways the call graph cannot follow: a module it hands on whole or indexes by a
-// computed name (see moduleUse), a module it re-exports whole (export * from "x", export { default } from "x"), and a
-// package name it spells as a plain string (knex({ client: "pg" }), app.set("view engine", "pug")), since a dependency
-// can load the package by that name.
-export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
+/** Module specifiers the file uses in ways the call graph cannot follow (`opaque`): a module it hands on whole or reads
+ * a member of through a computed name, itself or a value made from it (see moduleUse), a module it re-exports whole
+ * (export * from "x", export { default } from "x"), and a package name it spells as a string (knex({ client: "pg" }),
+ * app.set("view engine", "pug"), require(`lodash/${name}`)), since code can load the package by that name. `bindings`:
+ * the local names it binds a module to (const _ = require("lodash")), as [name, specifier]. */
+export function extractModuleUses(tree: Parser.Tree): { opaque: string[]; bindings: Array<[string, string]> } {
   const opaque = new Set<string>();
   const bound = new Set<string>();
+  const bindings: Array<[string, string]> = [];
   const references = new Map<string, Parser.SyntaxNode[]>();
   for (const node of tree.rootNode.descendantsOfType(["identifier", "shorthand_property_identifier"])) {
     const name = decodeEscapes(node.text);
@@ -252,39 +285,51 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     }
   }
 
-  const follow = (value: Parser.SyntaxNode, specifier: string): void => {
-    const use = moduleUse(value);
+  const follow = (value: Parser.SyntaxNode, specifier: string, derived = false): void => {
+    const use = moduleUse(value, derived);
     if (use === "opaque") {
       opaque.add(specifier);
     } else if (use !== "named") {
-      bind(use.text, specifier);
+      for (const [name, isDerived] of use) {
+        bind(name.text, specifier, isDerived);
+      }
     }
   };
-  // Every reference to the name counts, shadowing ignored, so a parameter of the same name can only add to the set.
-  const bind = (local: string, specifier: string): void => {
+  // Every reference to the name counts, shadowing ignored, so a parameter of the same name can only add to the set. A
+  // name followed as the module needs no second pass as a value made from it: the module's uses include a value's.
+  const bind = (local: string, specifier: string, derived = false): void => {
     const name = decodeEscapes(local);
-    if (bound.has(`${name}\0${specifier}`)) {
+    if (bound.has(`${name}\0${specifier}\0false`) || bound.has(`${name}\0${specifier}\0${derived}`)) {
       return;
     }
 
-    bound.add(`${name}\0${specifier}`);
+    bound.add(`${name}\0${specifier}\0${derived}`);
+    if (!derived) {
+      bindings.push([name, specifier]);
+    }
+
     for (const node of references.get(name) ?? []) {
       if (node.type === "shorthand_property_identifier") {
-        opaque.add(specifier);
+        if (!derived) {
+          opaque.add(specifier);
+        }
       } else if (!declares(node)) {
-        follow(node, specifier);
+        follow(node, specifier, derived);
       }
     }
   };
 
-  // A template literal without substitutions (`lodash`) is a plain string here, never one the graph reads as an import.
   for (const node of tree.rootNode.descendantsOfType(["string", "template_string"])) {
-    // Not the TypeScript keyword string, nor a template literal with substitutions.
-    if (!node.isNamed || (node.type === "template_string" && node.descendantsOfType("template_substitution").length > 0)) {
+    // Not the TypeScript keyword string.
+    if (!node.isNamed) {
       continue;
     }
 
-    const specifier = unescapeString(node.text.slice(1, -1));
+    // A template literal's text before its first substitution: `lodash/${name}` and `lodash${suffix}` name lodash. One
+    // without substitutions is a plain string here, never one the graph reads as an import.
+    const parts = node.type === "template_string" ? node.namedChildren : [];
+    const substitution = parts.findIndex((part) => part.type === "template_substitution");
+    const specifier = unescapeString(substitution >= 0 ? parts.slice(0, substitution).map((part) => part.text).join("") : node.text.slice(1, -1));
     const holder = node.type === "string" ? node.parent : null;
     const call = holder?.type === "arguments" && sameNode(holder.namedChild(0), node) ? holder.parent : null;
     const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
@@ -306,17 +351,19 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     } else if (call && (loader === "require" || loader === "import")) {
       follow(call, specifier);
     } else if (holder?.type === "import_statement") {
-      // import _ from "x", import * as _ from "x" and import { default as _ } from "x" bind the module.
+      // import _ from "x", import * as _ from "x" and import { default as _ } from "x" bind the module; import { chain }
+      // from "x" binds a value taken from it.
       for (const child of holder.namedChildren.find((entry) => entry.type === "import_clause")?.namedChildren ?? []) {
-        const names =
-          child.type === "namespace_import"
-            ? [child.namedChild(0)]
-            : child.type === "identifier"
-              ? [child]
-              : child.namedChildren.filter((entry) => exportName(entry.childForFieldName("name")) === "default").map((entry) => entry.childForFieldName("alias"));
-        for (const name of names) {
+        const names: Array<[Parser.SyntaxNode | null, boolean]> =
+          child.type === "namespace_import" || child.type === "identifier"
+            ? [[child.type === "identifier" ? child : child.namedChild(0), false]]
+            : child.namedChildren.map((entry) => [
+                entry.childForFieldName("alias") ?? entry.childForFieldName("name"),
+                exportName(entry.childForFieldName("name")) !== "default",
+              ]);
+        for (const [name, derived] of names) {
           if (name) {
-            bind(name.text, specifier);
+            bind(name.text, specifier, derived);
           }
         }
       }
@@ -334,7 +381,7 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     }
   }
 
-  return [...opaque];
+  return { opaque: [...opaque], bindings };
 }
 
 export function extractUsedNamesWithLanguage(tree: Parser.Tree, language: unknown): Set<string> {
@@ -537,7 +584,7 @@ export function parseJavaScriptFile(filePath: string, options: ParseOptions = {}
     ),
     exports: extractExports(tree),
     calls: extractCallSites(tree),
-    ...(options.opaque ? { opaque: extractOpaqueSpecifiers(tree) } : {}),
+    ...(options.opaque ? extractModuleUses(tree) : {}),
     ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, JavaScript) } : {}),
   };
 }
