@@ -152,19 +152,19 @@ function parseV2(lockfile: PackageLockV2, config: ReachableConfig): InstalledPac
   return [...packages.values()];
 }
 
-/** Install folders (node_modules/a/node_modules/b, absolute) of the packages the analysis leaves out: dev-only ones and
- * the config's devPackages. Empty for a lockfile without a "packages" map. */
-export function excludedPackagePaths(cwd: string): Set<string> {
+/** The packages the analysis leaves out (dev-only ones and the config's devPackages): their install folders
+ * (node_modules/a/node_modules/b, absolute) and their name@version ids, since npm's linked install keeps each version in
+ * one folder (node_modules/.store/<name>@<version>-<hash>). An id is excluded only if no kept package (parsePackageLock,
+ * in any lockfile) has it; the caller checks. Empty for a lockfile without a "packages" map. */
+export function excludedPackages(cwd: string): Set<string> {
   const lockfile = readPackageLock(cwd);
   const config = loadConfigSync(cwd);
 
   return new Set(
-    Object.entries(lockfile.packages ?? {})
-      .filter(([packageKey, value]) => {
-        const name = value.name ?? packageNameFromPathKey(packageKey);
-        return name !== null && !shouldIncludePackage(name, Boolean(value.dev), config);
-      })
-      .map(([packageKey]) => path.resolve(cwd, packageKey)),
+    Object.entries(lockfile.packages ?? {}).flatMap(([packageKey, value]) => {
+      const name = value.name ?? packageNameFromPathKey(packageKey);
+      return name !== null && !shouldIncludePackage(name, Boolean(value.dev), config) ? [path.resolve(cwd, packageKey), `${name}@${value.version}`] : [];
+    }),
   );
 }
 

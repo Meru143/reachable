@@ -17,4 +17,6 @@ export interface CallGraph {
   nodes: Map<string, CallNode>;
   edges: CallEdge[];
   entryPoints: string[];
+  /** Packages a project file uses in ways its calls cannot show (ParsedModule.opaque): no verdict about them is UNREACHABLE. */
+  opaque?: Set<string>;
 }

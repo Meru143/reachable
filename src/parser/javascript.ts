@@ -97,6 +97,246 @@ function declaresOrExports(node: Parser.SyntaxNode): boolean {
   );
 }
 
+// A bare module specifier: lodash, @scope/pkg, lodash/fp.
+const SPECIFIER = /^(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*(?:\/[\w.~@/-]*)?$/;
+
+// A name declared here (a parameter, a variable, a function, the import itself) is a new binding, not a use.
+function declares(node: Parser.SyntaxNode): boolean {
+  const parent = node.parent;
+  const is = (field: string): boolean => sameNode(parent?.childForFieldName(field) ?? null, node);
+  switch (parent?.type) {
+    case "formal_parameters":
+    case "array_pattern":
+    case "rest_pattern":
+    case "catch_clause":
+    case "import_clause":
+    case "namespace_import":
+    case "import_specifier":
+    case "import_require_clause":
+      return true;
+    case "assignment_pattern":
+    case "for_in_statement":
+      return is("left");
+    case "pair_pattern":
+      return is("value");
+    case "arrow_function":
+      return is("parameter");
+    case "required_parameter":
+    case "optional_parameter":
+      return is("pattern");
+    case "variable_declarator":
+    case "function_declaration":
+    case "function_expression":
+    case "generator_function":
+    case "generator_function_declaration":
+    case "class_declaration":
+    case "class":
+      return is("name");
+    default:
+      return false;
+  }
+}
+
+// The character a \x6c, \u{6c} or four-digit \u escape stands for; the escape itself when it names no code point.
+function decodeEscape(escape: string, hex: string): string {
+  const code = parseInt(hex, 16);
+  return code <= 0x10ffff ? String.fromCodePoint(code) : escape;
+}
+
+/** Source text with its \x6c, \u{6c} and four-digit \u escapes decoded: identifiers and strings can spell a name that
+ * way (_.temp\u{6c}ate()). Other text is kept, an escaped backslash too, so the escape after it stays literal. */
+export function decodeEscapes(text: string): string {
+  return text.replace(/\\\\|\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4}))/g, (escape, hex, braced, unicode) =>
+    escape === "\\\\" ? escape : decodeEscape(escape, hex ?? braced ?? unicode),
+  );
+}
+
+// The value of a string literal's source text, escapes decoded: "lo\x64ash" is lodash.
+function unescapeString(text: string): string {
+  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|(.))/gs, (escape, hex, braced, unicode, char: string | undefined) =>
+    char ?? decodeEscape(escape, hex ?? braced ?? unicode),
+  );
+}
+
+// The name an import or export specifier or a destructuring key spells: an identifier or a string, escapes decoded
+// (default, "default", \u{64}efault).
+function exportName(node: Parser.SyntaxNode | null): string | null {
+  return node ? unescapeString(node.type === "string" ? node.text.slice(1, -1) : node.text) : null;
+}
+
+// The member a member access reads by name: map for _.map and _["map"], none for _[name].
+function memberName(access: Parser.SyntaxNode): string | null {
+  // A property may spell its name with escapes (.th\u{65}n).
+  if (access.type === "member_expression") {
+    const property = access.childForFieldName("property")?.text;
+    return property === undefined ? null : decodeEscapes(property);
+  }
+
+  // An escaped key (_["temp\x6cate"]) is not a plain name: the text search for the function cannot see it.
+  const index = access.type === "subscript_expression" ? access.childForFieldName("index") : null;
+  return index?.type === "string" && !index.text.includes("\\") ? index.text.slice(1, -1) : null;
+}
+
+// What code does with a module value (require("x"), import("x"), or a name bound to one): reads or calls a member by
+// its name (_.map(), _["map"], _(x), const { map } = _), which the call graph sees; gives it another name (const lib
+// = _), which is followed; or anything else, which hands the whole module to code the graph does not follow
+// (Object.assign({}, _), app.locals.lib = _, render(_), export default _) or reads a member through a computed name
+// (_[name]).
+function moduleUse(node: Parser.SyntaxNode): "named" | "opaque" | Parser.SyntaxNode {
+  const parent = node.parent;
+  switch (parent?.type) {
+    case "member_expression":
+    case "subscript_expression": {
+      // _.default and _["default"] are the module itself (ES module interop); obj[_] and _[name] are not named reads.
+      const name = sameNode(parent.childForFieldName("object"), node) ? memberName(parent) : null;
+      return name === null ? "opaque" : name === "default" ? moduleUse(parent) : "named";
+    }
+    case undefined:
+    case "call_expression":
+    case "expression_statement":
+    case "unary_expression":
+    case "type_query":
+    case "nested_type_identifier":
+    case "nested_identifier":
+      return "named";
+    case "await_expression":
+    case "parenthesized_expression":
+    case "as_expression":
+    case "satisfies_expression":
+    case "non_null_expression":
+    case "type_assertion":
+      return moduleUse(parent);
+    case "binary_expression":
+      return ["||", "&&", "??"].includes(parent.childForFieldName("operator")?.text ?? "") ? "opaque" : "named";
+    case "variable_declarator":
+    case "assignment_expression": {
+      const target = parent.childForFieldName(parent.type === "variable_declarator" ? "name" : "left");
+      if (!target || sameNode(target, node)) {
+        return "named";
+      }
+
+      // export const lib = _ hands it on under the new name.
+      if (target.type === "identifier") {
+        return parent.parent?.parent?.type === "export_statement" ? "opaque" : target;
+      }
+
+      if (target.type !== "object_pattern" || target.descendantsOfType(["rest_pattern", "computed_property_name"]).length > 0) {
+        return "opaque";
+      }
+
+      // const { default: lib } = await import("x"): lib is the module.
+      const whole = target.namedChildren.find((entry) => entry.type === "pair_pattern" && exportName(entry.childForFieldName("key")) === "default");
+      const value = whole?.childForFieldName("value");
+      return !whole ? "named" : value?.type === "identifier" ? value : "opaque";
+    }
+    default:
+      return "opaque";
+  }
+}
+
+// Module specifiers the file uses in ways the call graph cannot follow: a module it hands on whole or indexes by a
+// computed name (see moduleUse), a module it re-exports whole (export * from "x", export { default } from "x"), and a
+// package name it spells as a plain string (knex({ client: "pg" }), app.set("view engine", "pug")), since a dependency
+// can load the package by that name.
+export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
+  const opaque = new Set<string>();
+  const bound = new Set<string>();
+  const references = new Map<string, Parser.SyntaxNode[]>();
+  for (const node of tree.rootNode.descendantsOfType(["identifier", "shorthand_property_identifier"])) {
+    const name = decodeEscapes(node.text);
+    const nodes = references.get(name);
+    if (nodes) {
+      nodes.push(node);
+    } else {
+      references.set(name, [node]);
+    }
+  }
+
+  const follow = (value: Parser.SyntaxNode, specifier: string): void => {
+    const use = moduleUse(value);
+    if (use === "opaque") {
+      opaque.add(specifier);
+    } else if (use !== "named") {
+      bind(use.text, specifier);
+    }
+  };
+  // Every reference to the name counts, shadowing ignored, so a parameter of the same name can only add to the set.
+  const bind = (local: string, specifier: string): void => {
+    const name = decodeEscapes(local);
+    if (bound.has(`${name}\0${specifier}`)) {
+      return;
+    }
+
+    bound.add(`${name}\0${specifier}`);
+    for (const node of references.get(name) ?? []) {
+      if (node.type === "shorthand_property_identifier") {
+        opaque.add(specifier);
+      } else if (!declares(node)) {
+        follow(node, specifier);
+      }
+    }
+  };
+
+  // A template literal without substitutions (`lodash`) is a plain string here, never one the graph reads as an import.
+  for (const node of tree.rootNode.descendantsOfType(["string", "template_string"])) {
+    // Not the TypeScript keyword string, nor a template literal with substitutions.
+    if (!node.isNamed || (node.type === "template_string" && node.descendantsOfType("template_substitution").length > 0)) {
+      continue;
+    }
+
+    const specifier = unescapeString(node.text.slice(1, -1));
+    const holder = node.type === "string" ? node.parent : null;
+    const call = holder?.type === "arguments" && sameNode(holder.namedChild(0), node) ? holder.parent : null;
+    const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
+    // What holds the import() call, parentheses aside: await (import("x")) is awaited too.
+    let outer = call?.parent ?? null;
+    while (outer?.type === "parenthesized_expression") {
+      outer = outer.parent;
+    }
+
+    if (call && loader === "import" && outer?.type !== "await_expression") {
+      // An import() promise hands the module on unless it is awaited where it is made: chained (import("x").then(render)),
+      // assigned or passed. A bare import("x"); loads it only, and typeof import("x") or a member read under another name
+      // is a TypeScript type (import("x").Dictionary).
+      const name = outer ? memberName(outer) : null;
+      const typeOrLoad = outer?.type === "expression_statement" || outer?.type === "type_query";
+      if (!typeOrLoad && (name === null || ["then", "catch", "finally"].includes(name))) {
+        opaque.add(specifier);
+      }
+    } else if (call && (loader === "require" || loader === "import")) {
+      follow(call, specifier);
+    } else if (holder?.type === "import_statement") {
+      // import _ from "x", import * as _ from "x" and import { default as _ } from "x" bind the module.
+      for (const child of holder.namedChildren.find((entry) => entry.type === "import_clause")?.namedChildren ?? []) {
+        const names =
+          child.type === "namespace_import"
+            ? [child.namedChild(0)]
+            : child.type === "identifier"
+              ? [child]
+              : child.namedChildren.filter((entry) => exportName(entry.childForFieldName("name")) === "default").map((entry) => entry.childForFieldName("alias"));
+        for (const name of names) {
+          if (name) {
+            bind(name.text, specifier);
+          }
+        }
+      }
+    } else if (holder?.type === "import_require_clause") {
+      bind(holder.namedChild(0)?.text ?? "", specifier);
+    } else if (holder?.type === "export_statement") {
+      // Not export type { default } from "x", which TypeScript erases.
+      const clause = holder.namedChildren.find((entry) => entry.type === "export_clause");
+      if (!/^export\s+type\b/.test(holder.text) && (!clause || clause.namedChildren.some((entry) => exportName(entry.childForFieldName("name")) === "default"))) {
+        opaque.add(specifier);
+      }
+    } else if (!["module", "literal_type", "property_signature"].includes(node.parent?.type ?? "") && SPECIFIER.test(specifier)) {
+      // Not a TypeScript type (declare module "x", type Engine = "x", { "x": T }), which loads nothing.
+      opaque.add(specifier);
+    }
+  }
+
+  return [...opaque];
+}
+
 export function extractUsedNamesWithLanguage(tree: Parser.Tree, language: unknown): Set<string> {
   return new Set(
     captureNodes(language, tree, NAME_QUERY)
@@ -264,7 +504,7 @@ export function extractCallSitesWithLanguage(tree: Parser.Tree, language: unknow
     captures
       .filter((capture) => capture.name === "callee")
       .map((capture) => ({
-        callee: capture.node.text,
+        callee: decodeEscapes(capture.node.text),
         line: lineOf(capture.node),
       })),
     (entry) => `${entry.callee}:${entry.line}`,
@@ -297,6 +537,7 @@ export function parseJavaScriptFile(filePath: string, options: ParseOptions = {}
     ),
     exports: extractExports(tree),
     calls: extractCallSites(tree),
+    ...(options.opaque ? { opaque: extractOpaqueSpecifiers(tree) } : {}),
     ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, JavaScript) } : {}),
   };
 }

@@ -88,6 +88,7 @@ describe("parser/typescript", () => {
       cts: ["greet.cts", 'import _ from "lodash";\nexport const greet = (name: string): string => _.template("Hi")({ name });\n'],
       node: ["www", '#!/usr/bin/env node\nconst app = require("../app");\napp.listen(3000);\n'],
       plain: ["cli", 'require("./main");\n'],
+      nodejs: ["serve", '#!/usr/bin/env nodejs\nrequire("./main");\n'],
       shell: ["start", "#!/bin/sh\nexec node index.js\n"],
       markdown: ["README.md", "# app\n"],
     };
@@ -98,7 +99,26 @@ describe("parser/typescript", () => {
 
     expect(parseFile(file("cts")).calls).toEqual([{ callee: "_.template", line: 2 }]);
     expect(parseFile(file("node")).imports.map((entry) => entry.source)).toEqual(["../app"]);
-    expect([file("cts"), file("node"), file("plain"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", null, null]);
+    expect([file("cts"), file("node"), file("plain"), file("nodejs"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", "js", null, null]);
     expect(() => parseFile(file("shell"))).toThrow("Not JavaScript");
+  });
+
+  it("does not count types or a module declaration as opaque uses, and does count a module handed on", () => {
+    const dir = makeTempDir();
+    const typed = path.join(dir, "typed.ts");
+    const declared = path.join(dir, "types.d.ts");
+    const handed = path.join(dir, "handed.ts");
+    writeFileSync(
+      typed,
+      'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\ntype Engine = "lodash" | "underscore";\ninterface Engines { "lodash": Engine }\ntype Dict = import("lodash").Dictionary<string>;\nlet lib: typeof import("lodash");\nlet fp: import("lodash/fp").LodashMap;\nexport type { default, Dictionary as D } from "lodash";\nexport const out = (_ as Lodash).map([1], String);\n',
+      "utf8",
+    );
+    writeFileSync(declared, 'declare module "lodash";\n', "utf8");
+    writeFileSync(handed, 'import lib = require("lodash");\nexport default lib;\n', "utf8");
+
+    expect(parseFile(typed, { opaque: true }).opaque).toEqual([]);
+    expect(parseFile(declared, { opaque: true }).opaque).toEqual([]);
+    expect(parseFile(handed, { opaque: true }).opaque).toEqual(["lodash"]);
+    expect(parseFile(typed).opaque).toBeUndefined();
   });
 });

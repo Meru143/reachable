@@ -2,7 +2,7 @@
 import path from "node:path";
 
 import { parseFile } from "../parser/index.js";
-import { resolveImport } from "../parser/resolver.js";
+import { packageNameFromImport, resolveImport } from "../parser/resolver.js";
 import { ParseError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 import type { ExportRef, ParsedModule } from "../parser/index.js";
@@ -28,9 +28,10 @@ function packageNodeId(packageName: string): string {
   return `pkg:${packageName}::module`;
 }
 
-/** Test files stay out of the graph, and out of the analysis, unless --include-tests is passed. */
-export function isSkippedTestFile(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, "/");
+/** Test files stay out of the graph, and out of the analysis, unless --include-tests is passed. Only the path inside
+ * the project counts: a project that sits in a __tests__ folder is not all tests. */
+export function isSkippedTestFile(filePath: string, cwd: string): boolean {
+  const normalized = `/${normalizeFilePath(filePath, cwd)}`;
   return (
     !process.argv.includes("--include-tests") &&
     (/\.test\.[cm]?[jt]sx?$/.test(normalized) || /\.spec\.[cm]?[jt]sx?$/.test(normalized) || normalized.includes("/__tests__/"))
@@ -58,10 +59,12 @@ function addEdge(graph: CallGraph, edge: { from: string; to: string; importedFro
 }
 
 export function buildGraph(files: string[], entryPoints: string[], cwd: string): CallGraph {
+  const opaque = new Set<string>();
   const graph: CallGraph = {
     nodes: new Map(),
     edges: [],
     entryPoints: [],
+    opaque,
   };
   const edgeSet = new Set<string>();
   const visitedFiles = new Set<string>();
@@ -76,7 +79,7 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
     }
 
     try {
-      const parsed = parseFile(filePath);
+      const parsed = parseFile(filePath, { opaque: true });
       parsedFiles.set(filePath, parsed);
       return parsed;
     } catch (error) {
@@ -159,7 +162,7 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
   function visitFile(filePath: string): void {
     const absoluteFile = path.resolve(cwd, filePath);
 
-    if (isSkippedTestFile(absoluteFile) && !absoluteEntries.has(absoluteFile)) {
+    if (isSkippedTestFile(absoluteFile, cwd) && !absoluteEntries.has(absoluteFile)) {
       return;
     }
 
@@ -205,6 +208,13 @@ export function buildGraph(files: string[], entryPoints: string[], cwd: string):
         isEntryPoint: false,
       });
       addEdge(graph, { from: currentModuleId, to: exportedNodeId, importedFrom: relativeFile }, edgeSet);
+    }
+
+    // Not resolved through tsconfig paths: most are plain strings, and a path alias names no installed package.
+    for (const specifier of parsed.opaque ?? []) {
+      if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) {
+        opaque.add(packageNameFromImport(specifier));
+      }
     }
 
     for (const call of parsed.calls) {

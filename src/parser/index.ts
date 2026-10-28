@@ -29,11 +29,14 @@ export interface ParsedModule {
   imports: ImportRef[];
   exports: ExportRef[];
   calls: CallRef[];
+  /** With `opaque: true`: module specifiers the module uses in ways calls cannot show (handed on whole, indexed by a
+   * computed name, or a package name spelled as a plain string). */
+  opaque?: string[];
   /** With `usedNames: true`: names the module uses beyond declaring them or binding them to an export. */
   usedNames?: Set<string>;
 }
 
-export type ParseOptions = { usedNames?: boolean };
+export type ParseOptions = { usedNames?: boolean; opaque?: boolean };
 
 const LANGUAGES = new Map<string, "js" | "ts" | "tsx">([
   ["", "js"],
@@ -57,7 +60,7 @@ export function languageOf(filePath: string): "js" | "ts" | "tsx" | null {
   }
 
   const firstLine = readFileSync(filePath, "utf8").split("\n", 1)[0] ?? "";
-  return !firstLine.startsWith("#!") || /\bnode\b/.test(firstLine) ? language : null;
+  return !firstLine.startsWith("#!") || /\bnode(?:js)?\b/.test(firstLine) ? language : null;
 }
 
 export function parseFile(filePath: string, options: ParseOptions = {}): ParsedModule {
