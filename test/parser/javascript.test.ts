@@ -141,6 +141,7 @@ describe("parser/javascript", () => {
         (await import("lodash")).default.map([1], String);
         require("lodash").default.map([1], String);
         require("lodash")["default"].map([1], String);
+        import("lodash");
       `),
     );
 
@@ -168,6 +169,9 @@ describe("parser/javascript", () => {
     ["an awaited import()", 'const lib = await import("lodash");\nregister(lib);'],
     ["a promise chain", 'import("lodash").then(render);'],
     ["a promise chain in brackets", 'import("lodash")["then"](render);'],
+    ["a promise kept for later", 'const pending = import("lodash");\npending.then(render);'],
+    ["a promise returned", "export const load = () => import(\"lodash\");"],
+    ["its name with escapes", 'render("\\u006codash", text);\nrender("lo\\x64ash", text);'],
     ["the default property in brackets", 'const lib = require("lodash")["default"];\napp.locals.lib = lib;'],
     ["a default import by name", 'import { default as lib, map } from "lodash";\nregister(lib, map);'],
     ["a destructured default", 'const { default: lib } = await import("lodash");\nregister(lib);'],

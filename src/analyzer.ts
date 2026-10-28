@@ -622,10 +622,10 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
 const PROJECT_FILES =
   /\.(?:[cm]?[jt]sx?|vue|svelte|astro|marko|mdx|ejs|pug|jade|hbs|handlebars|mustache|njk|nunjucks|liquid|eta|twig|dust|swig|haml|hamlc|hjs|hogan|jst|tpl|tmpl|vash|edge|art|eco|ect|j2|jinja2?|html?|coffee|litcoffee)$|^[^.]+$/;
 
-// An extensionless file node may run (bin/www, scripts/report): a shebang naming node (or bun, deno, tsx), or no shebang
-// and code that loads modules. Not README, LICENSE, Makefile or a binary.
+// An extensionless file node may run (bin/www, scripts/report): a shebang naming node (or nodejs, bun, deno, tsx), or no
+// shebang and code that loads modules. Not README, LICENSE, Makefile or a binary.
 function isScript(text: string): boolean {
-  return !text.includes("\0") && (text.startsWith("#!") ? /^#!.*\b(?:node|bun|deno|tsx)\b/.test(text) : /\b(?:require|import)\b/.test(text));
+  return !text.includes("\0") && (text.startsWith("#!") ? /^#!.*\b(?:nodejs|node|bun|deno|tsx)\b/.test(text) : /\b(?:require|import)\b/.test(text));
 }
 
 // The first 8 KB of a file: enough to rule out a binary (a NUL byte) or another interpreter's script before reading it.

@@ -137,6 +137,13 @@ function declares(node: Parser.SyntaxNode): boolean {
   }
 }
 
+// The value of a string literal's source text: "lodash" is lodash.
+function unescapeString(text: string): string {
+  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|(.))/gs, (_escape, hex, braced, unicode, char: string | undefined) =>
+    char ?? String.fromCodePoint(parseInt(hex ?? braced ?? unicode, 16)),
+  );
+}
+
 // The member a member access reads by name: map for _.map and _["map"], none for _[name].
 function memberName(access: Parser.SyntaxNode): string | null {
   if (access.type === "member_expression") {
@@ -252,18 +259,21 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
       continue;
     }
 
-    const specifier = node.text.slice(1, -1);
+    const specifier = unescapeString(node.text.slice(1, -1));
     const holder = node.type === "string" ? node.parent : null;
     const call = holder?.type === "arguments" && sameNode(holder.namedChild(0), node) ? holder.parent : null;
     const loader = call?.type === "call_expression" ? call.childForFieldName("function")?.text : undefined;
-    if (loader === "require" || loader === "import") {
-      // import("x").then(render) hands the module to the callback.
-      const promised = loader === "import" && call?.parent && ["then", "catch", "finally"].includes(memberName(call.parent) ?? "");
-      if (promised) {
+    if (call && loader === "import" && call.parent?.type !== "await_expression") {
+      // An import() promise hands the module on unless it is awaited where it is made: chained (import("x").then(render)),
+      // assigned or passed. A bare import("x"); loads it only, and typeof import("x") or a member read under another name
+      // is a TypeScript type (import("x").Dictionary).
+      const name = call.parent ? memberName(call.parent) : null;
+      const typeOrLoad = call.parent?.type === "expression_statement" || call.parent?.type === "type_query";
+      if (!typeOrLoad && (name === null || ["then", "catch", "finally"].includes(name))) {
         opaque.add(specifier);
-      } else if (call) {
-        follow(call, specifier);
       }
+    } else if (call && (loader === "require" || loader === "import")) {
+      follow(call, specifier);
     } else if (holder?.type === "import_statement") {
       // import _ from "x", import * as _ from "x" and import { default as _ } from "x" bind the module.
       for (const child of holder.namedChildren.find((entry) => entry.type === "import_clause")?.namedChildren ?? []) {

@@ -60,7 +60,7 @@ export function languageOf(filePath: string): "js" | "ts" | "tsx" | null {
   }
 
   const firstLine = readFileSync(filePath, "utf8").split("\n", 1)[0] ?? "";
-  return !firstLine.startsWith("#!") || /\bnode\b/.test(firstLine) ? language : null;
+  return !firstLine.startsWith("#!") || /\bnode(?:js)?\b/.test(firstLine) ? language : null;
 }
 
 export function parseFile(filePath: string, options: ParseOptions = {}): ParsedModule {

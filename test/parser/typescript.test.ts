@@ -88,6 +88,7 @@ describe("parser/typescript", () => {
       cts: ["greet.cts", 'import _ from "lodash";\nexport const greet = (name: string): string => _.template("Hi")({ name });\n'],
       node: ["www", '#!/usr/bin/env node\nconst app = require("../app");\napp.listen(3000);\n'],
       plain: ["cli", 'require("./main");\n'],
+      nodejs: ["serve", '#!/usr/bin/env nodejs\nrequire("./main");\n'],
       shell: ["start", "#!/bin/sh\nexec node index.js\n"],
       markdown: ["README.md", "# app\n"],
     };
@@ -98,7 +99,7 @@ describe("parser/typescript", () => {
 
     expect(parseFile(file("cts")).calls).toEqual([{ callee: "_.template", line: 2 }]);
     expect(parseFile(file("node")).imports.map((entry) => entry.source)).toEqual(["../app"]);
-    expect([file("cts"), file("node"), file("plain"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", null, null]);
+    expect([file("cts"), file("node"), file("plain"), file("nodejs"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", "js", null, null]);
     expect(() => parseFile(file("shell"))).toThrow("Not JavaScript");
   });
 

@@ -823,6 +823,8 @@ describe("analyzer", () => {
     writeProjectFile(shebang, path.join("bin", "www"), '#!/usr/bin/env node\nconst _ = require("lodash");\nconsole.log(_.template("Listening on <%= port %>")({ port: 3000 }));\n');
     const plain = lodashApp(source);
     writeProjectFile(plain, path.join("scripts", "report"), 'const _ = require("lodash");\nprocess.stdout.write(_.template("Report for <%= who %>")({ who: "me" }));\n');
+    const nodejs = lodashApp(source);
+    writeProjectFile(nodejs, path.join("bin", "serve"), '#!/usr/bin/env nodejs\nconst _ = require("lodash");\nconsole.log(_.template("Serving")({}));\n');
     // Not read: text node would not run (a license, a shell script) and a binary.
     const other = lodashApp(source);
     writeProjectFile(other, "LICENSE", "Use this template freely.\n");
@@ -831,6 +833,7 @@ describe("analyzer", () => {
 
     expect(verdicts(await analyze({ cwd: shebang }))).toEqual(unresolved);
     expect(verdicts(await analyze({ cwd: plain }))).toEqual(unresolved);
+    expect(verdicts(await analyze({ cwd: nodejs }))).toEqual(unresolved);
     expect(verdicts(await analyze({ cwd: other }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
   });
 
