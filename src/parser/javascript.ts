@@ -160,8 +160,10 @@ function unescapeString(text: string): string {
 
 // The member a member access reads by name: map for _.map and _["map"], none for _[name].
 function memberName(access: Parser.SyntaxNode): string | null {
+  // A property may spell its name with escapes (.th\u{65}n).
   if (access.type === "member_expression") {
-    return access.childForFieldName("property")?.text ?? null;
+    const property = access.childForFieldName("property")?.text;
+    return property === undefined ? null : decodeEscapes(property);
   }
 
   // An escaped key (_["temp\x6cate"]) is not a plain name: the text search for the function cannot see it.
