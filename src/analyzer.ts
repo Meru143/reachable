@@ -6,6 +6,7 @@ import { buildGraph, isSkippedTestFile } from "./graph/builder.js";
 import { findPathTo } from "./graph/traversal.js";
 import type { CallGraph } from "./graph/types.js";
 import { languageOf, parseFile } from "./parser/index.js";
+import { decodeEscapes } from "./parser/javascript.js";
 import { resolveFileCandidate, resolveImport } from "./parser/resolver.js";
 import { logger } from "./utils/logger.js";
 import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCache } from "./vuln/cache.js";
@@ -659,7 +660,7 @@ export function mentionedInProject(cwd: string, graph: CallGraph, symbols: strin
       return new Set(symbols);
     }
 
-    const text = readFileSync(file, "utf8");
+    const text = decodeEscapes(readFileSync(file, "utf8"));
     if (extensionless && !isScript(text)) {
       continue;
     }

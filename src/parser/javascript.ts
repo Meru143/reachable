@@ -137,10 +137,24 @@ function declares(node: Parser.SyntaxNode): boolean {
   }
 }
 
+// The character a \x6c, \u{6c} or four-digit \u escape stands for; the escape itself when it names no code point.
+function decodeEscape(escape: string, hex: string): string {
+  const code = parseInt(hex, 16);
+  return code <= 0x10ffff ? String.fromCodePoint(code) : escape;
+}
+
+/** Source text with its \x6c, \u{6c} and four-digit \u escapes decoded: identifiers and strings can spell a name that
+ * way (_.temp\u{6c}ate()). Other text is kept. */
+export function decodeEscapes(text: string): string {
+  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4}))/g, (escape, hex, braced, unicode) =>
+    decodeEscape(escape, hex ?? braced ?? unicode),
+  );
+}
+
 // The value of a string literal's source text, escapes decoded: "lo\x64ash" is lodash.
 function unescapeString(text: string): string {
-  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|(.))/gs, (_escape, hex, braced, unicode, char: string | undefined) =>
-    char ?? String.fromCodePoint(parseInt(hex ?? braced ?? unicode, 16)),
+  return text.replace(/\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4})|(.))/gs, (escape, hex, braced, unicode, char: string | undefined) =>
+    char ?? decodeEscape(escape, hex ?? braced ?? unicode),
   );
 }
 
@@ -221,11 +235,12 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
   const bound = new Set<string>();
   const references = new Map<string, Parser.SyntaxNode[]>();
   for (const node of tree.rootNode.descendantsOfType(["identifier", "shorthand_property_identifier"])) {
-    const nodes = references.get(node.text);
+    const name = decodeEscapes(node.text);
+    const nodes = references.get(name);
     if (nodes) {
       nodes.push(node);
     } else {
-      references.set(node.text, [node]);
+      references.set(name, [node]);
     }
   }
 
@@ -238,7 +253,8 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
     }
   };
   // Every reference to the name counts, shadowing ignored, so a parameter of the same name can only add to the set.
-  const bind = (name: string, specifier: string): void => {
+  const bind = (local: string, specifier: string): void => {
+    const name = decodeEscapes(local);
     if (bound.has(`${name}\0${specifier}`)) {
       return;
     }
@@ -474,7 +490,7 @@ export function extractCallSitesWithLanguage(tree: Parser.Tree, language: unknow
     captures
       .filter((capture) => capture.name === "callee")
       .map((capture) => ({
-        callee: capture.node.text,
+        callee: decodeEscapes(capture.node.text),
         line: lineOf(capture.node),
       })),
     (entry) => `${entry.callee}:${entry.line}`,

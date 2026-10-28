@@ -913,6 +913,18 @@ describe("analyzer", () => {
     warn.mockRestore();
   });
 
+  it("reads a function name spelled with escapes, in a call and in the project search", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const called = lodashApp('const _ = require("lodash");\nconsole.log(_.temp\\u{6c}ate("x")());\n');
+    const loaded = lodashApp(
+      'const fs = require("fs");\nconst _ = require("lodash");\nfor (const file of fs.readdirSync(__dirname + "/routes")) require(__dirname + "/routes/" + file);\nconsole.log(_.map([1], String));\n',
+    );
+    writeProjectFile(loaded, path.join("routes", "greet.js"), 'const _ = require("lodash");\nmodule.exports = (name) => _.temp\\u{6c}ate("Hello <%= name %>")({ name });\n');
+
+    expect(verdicts(await analyze({ cwd: called }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+    expect(verdicts(await analyze({ cwd: loaded }))).toEqual(unresolved);
+  });
+
   it("takes every condition of package.json exports as an entry point, and an exports string", async () => {
     mockOsv({ lodash: [templateAdvisory] });
     const conditions = lodashApp("");
