@@ -251,8 +251,8 @@ export function extractOpaqueSpecifiers(tree: Parser.Tree): string[] {
       if (!clause || /\bdefault\b/.test(clause.text)) {
         opaque.add(specifier);
       }
-    } else if (node.parent?.type !== "module" && SPECIFIER.test(specifier)) {
-      // Not declare module "x" in a .d.ts file, which only describes the package.
+    } else if (!["module", "literal_type", "property_signature"].includes(node.parent?.type ?? "") && SPECIFIER.test(specifier)) {
+      // Not a TypeScript type (declare module "x", type Engine = "x", { "x": T }), which loads nothing.
       opaque.add(specifier);
     }
   }

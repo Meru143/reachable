@@ -1,5 +1,5 @@
 // Reachability analysis orchestration.
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { buildGraph, isSkippedTestFile } from "./graph/builder.js";
@@ -628,12 +628,28 @@ function isScript(text: string): boolean {
   return !text.includes("\0") && (text.startsWith("#!") ? /^#!.*\b(?:node|bun|deno|tsx)\b/.test(text) : /\b(?:require|import)\b/.test(text));
 }
 
+// The first 8 KB of a file: enough to rule out a binary (a NUL byte) or another interpreter's script before reading it.
+function fileStart(file: string): string {
+  const buffer = Buffer.alloc(8192);
+  const descriptor = openSync(file, "r");
+  try {
+    return buffer.toString("latin1", 0, readSync(descriptor, buffer, 0, buffer.length, 0));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+// ponytail: a project file over 64 MB is not read and counts as naming every symbol, so those verdicts stay UNKNOWN.
+// Stream such files if real projects keep source or templates that large.
+const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
+
 // Which of `symbols` a project file mentions, as raw text, reachable from an entry point or not: every file
 // collectSourceFiles finds (test files left out, as in the graph), components, templates and extensionless scripts, and
 // the graph's own files (an extensionless bin, dist/ files an entry imports). Routes loaded with fs.readdirSync and
 // require(file) never join the graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide
-// calls from it, and a file the parser cannot read still counts. One pass for all symbols, stopping once each is found.
-function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[]): Set<string> {
+// calls from it, and a file the parser cannot read still counts. An extensionless file is first judged from its start,
+// so a binary is never read whole. One pass for all symbols, stopping once each is found.
+export function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[], maxBytes = MAX_PROJECT_FILE_BYTES): Set<string> {
   const graphFiles = new Set(
     [...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
   );
@@ -641,8 +657,20 @@ function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[]): S
   const name = new RegExp(String.raw`(?<![\w$])(${symbols.map(escapeRegExp).join("|")})(?![\w$])`, "g");
   const found = new Set<string>();
   for (const file of files) {
+    const extensionless = path.extname(file) === "" && !graphFiles.has(file);
+    if (extensionless) {
+      const start = fileStart(file);
+      if (start.includes("\0") || (start.startsWith("#!") && !isScript(start))) {
+        continue;
+      }
+    }
+
+    if (statSync(file).size > maxBytes) {
+      return new Set(symbols);
+    }
+
     const text = readFileSync(file, "utf8");
-    if (path.extname(file) === "" && !graphFiles.has(file) && !isScript(text)) {
+    if (extensionless && !isScript(text)) {
       continue;
     }
 
@@ -671,7 +699,10 @@ const MAX_DEPENDENCY_CODE_BYTES = 256 * 1024 * 1024;
 // full, or a package links out of the project (file:../shared).
 export function namedInDependencyCode(cwd: string, names: string[], maxBytes = MAX_DEPENDENCY_CODE_BYTES): Set<string> | null {
   const projectDirs = [cwd, ...workspaceDirectories(cwd)];
-  const excluded = new Set(projectDirs.filter(hasPackageLock).flatMap((directory) => [...excludedPackages(directory)]));
+  const lockfileDirs = projectDirs.filter(hasPackageLock);
+  // A version one lockfile leaves out (a workspace's dev tool) may be one another keeps, and a linked store holds it once.
+  const kept = new Set(lockfileDirs.flatMap((directory) => parsePackageLock(directory).map(({ name, version }) => `${name}@${version}`)));
+  const excluded = new Set(lockfileDirs.flatMap((directory) => [...excludedPackages(directory)]).filter((entry) => !kept.has(entry)));
   const installedId = (directory: string): string => {
     const manifest = packageJsonAt(directory);
     return manifest ? `${String(manifest.name)}@${String(manifest.version)}` : "";

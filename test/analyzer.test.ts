@@ -10,8 +10,10 @@ import {
   analyze,
   collectSourceFiles,
   detectEntryPoints,
+  mentionedInProject,
   namedInDependencyCode,
 } from "../src/analyzer.js";
+import { buildGraph } from "../src/graph/builder.js";
 import { ParseError, ReachableError } from "../src/utils/errors.js";
 import { logger } from "../src/utils/logger.js";
 import { createCacheKey } from "../src/vuln/cache.js";
@@ -949,5 +951,35 @@ describe("namedInDependencyCode", () => {
     writeProjectFile(shared, "index.js", "require('qs');\n");
     symlinkSync(shared, path.join(cwd, "node_modules", "shared"), "junction");
     expect(namedInDependencyCode(cwd, names)).toBeNull();
+  });
+
+  it("reads a store package one workspace's lockfile lists as dev-only when another lockfile keeps that version", () => {
+    const cwd = makeTempDir();
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", workspaces: ["packages/*"] }));
+    writeProjectFile(cwd, "package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "app" }, "node_modules/tplkit": { version: "1.0.0" } } }));
+    writeProjectFile(cwd, path.join("packages", "tool", "package.json"), JSON.stringify({ name: "tool" }));
+    writeProjectFile(
+      cwd,
+      path.join("packages", "tool", "package-lock.json"),
+      JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "tool" }, "node_modules/tplkit": { version: "1.0.0", dev: true } } }),
+    );
+    const stored = path.join(cwd, "node_modules", ".store", "tplkit@1.0.0-qQuXSNEsRBRAg3LApLeIwg", "node_modules", "tplkit");
+    writeProjectFile(stored, "package.json", JSON.stringify({ name: "tplkit", version: "1.0.0" }));
+    writeProjectFile(stored, "index.js", "module.exports = (engine) => require('lodash').template(engine);\n");
+
+    expect(namedInDependencyCode(cwd, ["lodash"])).toEqual(new Set(["lodash"]));
+  });
+});
+
+describe("mentionedInProject", () => {
+  it("skips an extensionless binary from its first bytes, and counts a file over the size limit as naming every symbol", () => {
+    const cwd = makeTempDir();
+    writeProjectFile(cwd, "index.js", "module.exports = 1;\n");
+    writeProjectFile(cwd, path.join("bin", "tool"), `\u007fELF\0${"x".repeat(200)} require template\n`);
+    const symbols = ["template", "trim"];
+
+    expect(mentionedInProject(cwd, buildGraph([], [], cwd), symbols, 100)).toEqual(new Set());
+    writeProjectFile(cwd, path.join("views", "report.html"), `<p>${"x".repeat(200)}</p>\n`);
+    expect(mentionedInProject(cwd, buildGraph([], [], cwd), symbols, 100)).toEqual(new Set(symbols));
   });
 });

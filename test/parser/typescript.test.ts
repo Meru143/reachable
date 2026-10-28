@@ -107,7 +107,11 @@ describe("parser/typescript", () => {
     const typed = path.join(dir, "typed.ts");
     const declared = path.join(dir, "types.d.ts");
     const handed = path.join(dir, "handed.ts");
-    writeFileSync(typed, 'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\nexport const out = (_ as Lodash).map([1], String);\n', "utf8");
+    writeFileSync(
+      typed,
+      'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\ntype Engine = "lodash" | "underscore";\ninterface Engines { "lodash": Engine }\nexport const out = (_ as Lodash).map([1], String);\n',
+      "utf8",
+    );
     writeFileSync(declared, 'declare module "lodash";\n', "utf8");
     writeFileSync(handed, 'import lib = require("lodash");\nexport default lib;\n', "utf8");
 
