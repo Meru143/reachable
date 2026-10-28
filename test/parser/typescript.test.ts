@@ -101,4 +101,19 @@ describe("parser/typescript", () => {
     expect([file("cts"), file("node"), file("plain"), file("shell"), file("markdown")].map(languageOf)).toEqual(["ts", "js", "js", null, null]);
     expect(() => parseFile(file("shell"))).toThrow("Not JavaScript");
   });
+
+  it("does not count types or a module declaration as opaque uses, and does count a module handed on", () => {
+    const dir = makeTempDir();
+    const typed = path.join(dir, "typed.ts");
+    const declared = path.join(dir, "types.d.ts");
+    const handed = path.join(dir, "handed.ts");
+    writeFileSync(typed, 'import _ from "lodash";\nlet byId: _.Dictionary<string> = {};\ntype Lodash = typeof _;\nexport const out = (_ as Lodash).map([1], String);\n', "utf8");
+    writeFileSync(declared, 'declare module "lodash";\n', "utf8");
+    writeFileSync(handed, 'import lib = require("lodash");\nexport default lib;\n', "utf8");
+
+    expect(parseFile(typed, { opaque: true }).opaque).toEqual([]);
+    expect(parseFile(declared, { opaque: true }).opaque).toEqual([]);
+    expect(parseFile(handed, { opaque: true }).opaque).toEqual(["lodash"]);
+    expect(parseFile(typed).opaque).toBeUndefined();
+  });
 });

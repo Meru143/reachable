@@ -9,6 +9,7 @@ import {
   extractDynamicImportsWithLanguage,
   extractESMImportsWithLanguage,
   extractExportsWithLanguage,
+  extractOpaqueSpecifiers,
   extractUsedNamesWithLanguage,
   parseSource,
 } from "./javascript.js";
@@ -74,6 +75,7 @@ export function parseTypeScriptFile(filePath: string, isTsx = false, options: Pa
     ),
     exports: extractExportsWithLanguage(tree, language),
     calls: extractCallSitesWithLanguage(tree, language),
+    ...(options.opaque ? { opaque: extractOpaqueSpecifiers(tree) } : {}),
     ...(options.usedNames ? { usedNames: extractUsedNamesWithLanguage(tree, language) } : {}),
   };
 }

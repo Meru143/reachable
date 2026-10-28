@@ -7,6 +7,7 @@ import {
   extractDynamicImports,
   extractESMImports,
   extractExports,
+  extractOpaqueSpecifiers,
   extractRequireCalls,
   extractUsedNamesWithLanguage,
 } from "../../src/parser/javascript.js";
@@ -114,5 +115,56 @@ describe("parser/javascript", () => {
       expect(used).not.toContain(name);
     }
     expect(defaultDeclaration).toContain("declaredDefault");
+  });
+
+  it("does not count uses of a module the call graph sees as opaque", () => {
+    const opaque = extractOpaqueSpecifiers(
+      parse(`
+        const _ = require("lodash");
+        import fp from "lodash/fp";
+        import * as lo from "lodash";
+        const debug = require("debug")("app");
+        require("dotenv").config();
+        import "./side-effect";
+        _.map([1], String);
+        _["map"]([1], String);
+        _([1]).value();
+        lo?.map([1], String);
+        fp.map(String);
+        const { trim, pad: padStart } = _;
+        const lib = _;
+        lib.chunk([1, 2], 1);
+        if (typeof _ === "function" && !lo) [1].map((_, i) => i);
+        for (const lo of [1]) count += 1;
+      `),
+    );
+
+    expect(opaque).not.toContain("lodash");
+    expect(opaque).not.toContain("lodash/fp");
+    expect(opaque).not.toContain("debug");
+  });
+
+  it.each([
+    ["a computed member (f13-computed)", 'const _ = require("lodash");\nconst fn = "temp" + "late";\n_[fn]("x");'],
+    ["a copy (h-twig)", 'const _ = require("lodash");\nres.locals.lib = Object.assign({}, _);'],
+    ["an assignment", 'const _ = require("lodash");\napp.locals.lib = _;'],
+    ["an argument (h-ns-passed)", 'const _ = require("lodash");\nrender(_, "Hi");'],
+    ["a shorthand property", 'const _ = require("lodash");\nres.render("index", { _ });'],
+    ["another name, then handed on", 'const lib = require("lodash");\nconst helpers = lib;\nmodule.exports = { helpers };'],
+    ["a rest pattern", 'const _ = require("lodash");\nconst { map, ...rest } = _;\nmodule.exports = rest;'],
+    ["enumeration", 'const _ = require("lodash");\nfor (const key in _) console.log(key);'],
+    ["a fallback", 'const lib = globalThis._ || require("lodash");'],
+    ["a default export", 'import _ from "lodash";\nexport default _;'],
+    ["an exported name", 'import * as _ from "lodash";\nexport const lib = _;'],
+    ["an export list", 'import * as _ from "lodash";\nexport { _ };'],
+    ["module.exports (h-barrel-cjs)", 'module.exports = require("lodash");'],
+    ["export * (h-barrel-star-ts)", 'export * from "lodash";'],
+    ["a re-exported default", 'export { default as lib } from "lodash";'],
+    ["an awaited import()", 'const lib = await import("lodash");\nregister(lib);'],
+    ["its name, to a dependency (h-computed-spec)", 'const render = require("tplkit");\nrender("lodash", "Hi <%= n %>");'],
+    ["its name, to createRequire (h-createrequire)", 'const load = createRequire(import.meta.url);\nload("lodash/template");'],
+    ["its name in a template literal", "const name = `lodash`;\nawait import(name);"],
+  ])("lists a module used through %s as opaque", (_label, source) => {
+    expect(extractOpaqueSpecifiers(parse(source))).toEqual(expect.arrayContaining([expect.stringMatching(/^lodash(\/template)?$/)]));
   });
 });

@@ -20,7 +20,8 @@ type TsPathConfig = {
 
 let cachedConfig: { cwd: string; value: TsPathConfig | null } | null = null;
 
-function packageNameFromImport(importPath: string): string {
+/** The package a bare specifier loads: lodash for lodash/fp, @scope/pkg for @scope/pkg/x. */
+export function packageNameFromImport(importPath: string): string {
   if (importPath.startsWith("@")) {
     return importPath.split("/").slice(0, 2).join("/");
   }

@@ -13,6 +13,7 @@ import {
   namedInDependencyCode,
 } from "../src/analyzer.js";
 import { ParseError, ReachableError } from "../src/utils/errors.js";
+import { logger } from "../src/utils/logger.js";
 import { createCacheKey } from "../src/vuln/cache.js";
 import { fixturePath, mockOsv } from "./helpers.js";
 import type { Advisory, AdvisoryAffected } from "../src/vuln/types.js";
@@ -107,8 +108,7 @@ const installedLodash = [
 
 // An app whose only file is index.js, with lodash@4.17.20 installed (its code, or not installed when null);
 // `packages` adds lockfile entries.
-function lodashApp(source: string, packages: Record<string, object> = {}, lodashCode: string | null = installedLodash): string {
-  const cwd = makeTempDir();
+function lodashApp(source: string, packages: Record<string, object> = {}, lodashCode: string | null = installedLodash, cwd = makeTempDir()): string {
   writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", private: true, main: "index.js", dependencies: { lodash: "4.17.20" } }));
   writeProjectFile(
     cwd,
@@ -809,6 +809,103 @@ describe("analyzer", () => {
     const cwd = lodashApp('const _ = require("lodash");\n_.template("x");\n');
 
     expect(await analyze({ cwd, dryRun: true })).toEqual({ results: [], unchecked: ["lodash@4.17.20"] });
+  });
+
+  // Each regression below is named after the verification fixture of 1.0.13 that gave a false UNREACHABLE.
+  const unresolved = [["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "unresolved-reference"]];
+
+  it("reads the symbol from extensionless scripts that node runs and no entry point imports (h-binwww-main, h-script-noext)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const source = 'const _ = require("lodash");\nmodule.exports = _.map([1], String);\n';
+    const shebang = lodashApp(source);
+    writeProjectFile(shebang, path.join("bin", "www"), '#!/usr/bin/env node\nconst _ = require("lodash");\nconsole.log(_.template("Listening on <%= port %>")({ port: 3000 }));\n');
+    const plain = lodashApp(source);
+    writeProjectFile(plain, path.join("scripts", "report"), 'const _ = require("lodash");\nprocess.stdout.write(_.template("Report for <%= who %>")({ who: "me" }));\n');
+    // Not read: text node would not run (a license, a shell script) and a binary.
+    const other = lodashApp(source);
+    writeProjectFile(other, "LICENSE", "Use this template freely.\n");
+    writeProjectFile(other, path.join("bin", "start"), "#!/bin/sh\ncp template.html public/\n");
+    writeProjectFile(other, path.join("bin", "tool"), "\u007fELF\0\0 require template\n");
+
+    expect(verdicts(await analyze({ cwd: shebang }))).toEqual(unresolved);
+    expect(verdicts(await analyze({ cwd: plain }))).toEqual(unresolved);
+    expect(verdicts(await analyze({ cwd: other }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it.each([
+    ["a computed member (f13-computed)", 'const _ = require("lodash");\nconst fn = "temp" + "late";\nconsole.log(_[fn]("x")());\n'],
+    ["a copy handed to the views (h-twig)", 'const _ = require("lodash");\napp.use((req, res, next) => { res.locals.lib = Object.assign({}, _); next(); });\n'],
+    ["the module passed to other code (h-ns-passed)", 'const _ = require("lodash");\nconst render = require("./render");\nrender(_, "Hi");\n'],
+    ["its name passed to a dependency that loads it (h-computed-spec)", 'const _ = require("lodash");\nconst render = require("tplkit");\nconsole.log(_.map([1], String), render("lodash", "Hi"));\n'],
+  ])("reports UNKNOWN (unresolved-reference) when the app uses the package through %s", async (_label, source) => {
+    mockOsv({ lodash: [templateAdvisory] });
+
+    expect(verdicts(await analyze({ cwd: lodashApp(source) }))).toEqual(unresolved);
+  });
+
+  it.each([
+    ["views/index.twig", "<p>{{ lib.template(greeting) }}</p>\n"],
+    ["views/index.marko", "import _ from 'lodash';\n<p>${_.template(input.greeting)({})}</p>\n"],
+    ["views/index.dust", "<p>{@render template=greeting /}</p>\n"],
+    ["pages/post.mdx", "import _ from 'lodash'\n\n{_.template(props.body)()}\n"],
+    ["src/render.coffee", "_ = require 'lodash'\nmodule.exports = (s) -> _.template(s)()\n"],
+  ])("reports UNKNOWN (unresolved-reference) when %s names the symbol (h-view-marko, h-view-dust)", async (file, text) => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp('const _ = require("lodash");\n_.map([1], String);\n');
+    writeProjectFile(cwd, file, text);
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(unresolved);
+  });
+
+  it("searches npm's linked install store, leaving out its dev-only packages (h-linked)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    // npm install --install-strategy=linked: node_modules/<name> links to node_modules/.store/<name>@<version>-<hash>/node_modules/<name>.
+    const linked = (cwd: string, name: string, version: string, code: string): void => {
+      const dir = path.join(cwd, "node_modules", ".store", `${name}@${version}-qQuXSNEsRBRAg3LApLeIwg`, "node_modules", name);
+      writeProjectFile(dir, "package.json", JSON.stringify({ name, version, main: "index.js" }));
+      writeProjectFile(dir, "index.js", code);
+      symlinkSync(dir, path.join(cwd, "node_modules", name), "junction");
+    };
+    const prod = lodashApp('const cons = require("consolidate");\nconst _ = require("lodash");\nmodule.exports = { engine: cons.lodash, items: _.map([1], String) };\n', {
+      "node_modules/consolidate": { version: "0.16.0" },
+    });
+    linked(prod, "consolidate", "0.16.0", "exports.lodash = (str, options) => require('lodash').template(str)(options);\n");
+    const dev = lodashApp('const _ = require("lodash");\n_.map([1], String);\n', { "node_modules/eslint-plugin-lodash": { version: "7.4.0", dev: true } });
+    linked(dev, "eslint-plugin-lodash", "7.4.0", "module.exports = require('lodash');\n");
+
+    expect(verdicts(await analyze({ cwd: prod }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNKNOWN", "transitive"]]);
+    expect(verdicts(await analyze({ cwd: dev }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "UNREACHABLE", undefined]]);
+  });
+
+  it("does not take a project inside a __tests__ folder for test files (__tests__/app2)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp(
+      'const fs = require("fs");\nconst _ = require("lodash");\nconst routes = {};\nfor (const file of fs.readdirSync(__dirname + "/routes")) routes[file] = require(__dirname + "/routes/" + file);\nconsole.log(_.map(Object.keys(routes), String));\n',
+      {},
+      installedLodash,
+      path.join(makeTempDir(), "__tests__", "app2"),
+    );
+    writeProjectFile(cwd, path.join("routes", "greet.js"), 'const _ = require("lodash");\nmodule.exports = (name) => _.template("Hello <%= name %>")({ name });\n');
+
+    expect(verdicts(await analyze({ cwd }))).toEqual(unresolved);
+  });
+
+  it("finds the source of a dist/ entry that is not built, and warns about an entry it cannot find (h-main-missing)", async () => {
+    mockOsv({ lodash: [templateAdvisory] });
+    const cwd = lodashApp("");
+    rmSync(path.join(cwd, "index.js"));
+    writeProjectFile(cwd, "package.json", JSON.stringify({ name: "app", main: "dist/server.js", bin: { cli: "bin/cli.js" } }));
+    writeProjectFile(cwd, path.join("bin", "cli.js"), '#!/usr/bin/env node\nconst _ = require("lodash");\nconsole.log(_.map([1], String));\n');
+    writeProjectFile(cwd, path.join("src", "server.ts"), 'import _ from "lodash";\nexport const page = (s: string) => _.template(s)({});\n');
+    const warn = vi.spyOn(logger, "warn");
+
+    expect(detectEntryPoints(cwd)).toEqual([path.join(cwd, "src", "server.ts"), path.join(cwd, "bin", "cli.js")]);
+    expect(verdicts(await analyze({ cwd }))).toEqual([["GHSA-35jh-r3h4-6jhm", "template", "REACHABLE", undefined]]);
+
+    rmSync(path.join(cwd, "src"), { recursive: true });
+    expect(detectEntryPoints(cwd)).toEqual([path.join(cwd, "bin", "cli.js")]);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ file: "dist/server.js" }), "Skipping an entry point package.json names that does not exist");
+    warn.mockRestore();
   });
 });
 

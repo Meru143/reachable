@@ -29,11 +29,14 @@ export interface ParsedModule {
   imports: ImportRef[];
   exports: ExportRef[];
   calls: CallRef[];
+  /** With `opaque: true`: module specifiers the module uses in ways calls cannot show (handed on whole, indexed by a
+   * computed name, or a package name spelled as a plain string). */
+  opaque?: string[];
   /** With `usedNames: true`: names the module uses beyond declaring them or binding them to an export. */
   usedNames?: Set<string>;
 }
 
-export type ParseOptions = { usedNames?: boolean };
+export type ParseOptions = { usedNames?: boolean; opaque?: boolean };
 
 const LANGUAGES = new Map<string, "js" | "ts" | "tsx">([
   ["", "js"],

@@ -12,7 +12,7 @@ import { clearCache, createCacheKey, getCached, getCachedRegardlessOfTtl, setCac
 import { fetchVulns, queryBatch } from "./vuln/osv.js";
 import { extractVulnSymbols } from "./vuln/symbols.js";
 import type { Advisory, InstalledPackage, ReachabilityResult, UnknownReason } from "./vuln/types.js";
-import { addInstalledPackage, excludedPackagePaths, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
+import { addInstalledPackage, excludedPackages, packagesUsedByDependencies, parsePackageLock } from "./utils/packagelock.js";
 import { OsvApiError, ReachableError } from "./utils/errors.js";
 
 export interface AnalyzeOptions {
@@ -32,20 +32,28 @@ export interface AnalyzeResult {
   unchecked: string[];
 }
 
-function preferredEntryCandidates(candidate: string, packageDir: string): string[] {
-  const relativeCandidate = path.relative(packageDir, candidate);
-  const pathSegments = relativeCandidate.split(path.sep);
+// The files a package.json field names: for dist/ output its source (src/x.ts or x.ts), which also exists before a
+// build, else the file itself. One that does not exist is skipped with a warning.
+function entryFiles(target: string, packageDir: string): string[] {
+  const file = resolveFileCandidate(path.resolve(packageDir, target));
+  const relativeCandidate = path.relative(packageDir, file ?? path.resolve(packageDir, target));
+  const relativeWithoutExtension = relativeCandidate.replace(/^dist[\\/]/, "").replace(/\.[^.]+$/, "");
+  const sourceCandidates =
+    relativeCandidate.split(path.sep)[0] === "dist"
+      ? [path.join(packageDir, "src", relativeWithoutExtension), path.join(packageDir, relativeWithoutExtension)]
+          .map((entryCandidate) => resolveFileCandidate(entryCandidate))
+          .filter((entryCandidate): entryCandidate is string => Boolean(entryCandidate))
+      : [];
 
-  if (pathSegments[0] !== "dist") {
-    return [candidate];
+  if (sourceCandidates.length > 0) {
+    return sourceCandidates;
   }
 
-  const relativeWithoutExtension = relativeCandidate.replace(/^dist[\\/]/, "").replace(/\.[^.]+$/, "");
-  const sourceCandidates = [path.join(packageDir, "src", relativeWithoutExtension), path.join(packageDir, relativeWithoutExtension)]
-    .map((entryCandidate) => resolveFileCandidate(entryCandidate))
-    .filter((entryCandidate): entryCandidate is string => Boolean(entryCandidate));
+  if (!file) {
+    logger.warn({ file: target, packageDir }, "Skipping an entry point package.json names that does not exist");
+  }
 
-  return sourceCandidates.length > 0 ? sourceCandidates : [candidate];
+  return file ? [file] : [];
 }
 
 function packageJsonAt(directory: string): Record<string, unknown> | null {
@@ -131,10 +139,7 @@ function entryCandidatesForPackage(packageDir: string): string[] {
   const candidates: string[] = [];
   const main = packageJson.main;
   if (typeof main === "string") {
-    const resolvedMain = resolveFileCandidate(path.resolve(packageDir, main));
-    if (resolvedMain) {
-      candidates.push(...preferredEntryCandidates(resolvedMain, packageDir));
-    }
+    candidates.push(...entryFiles(main, packageDir));
   }
 
   const exportsField = packageJson.exports;
@@ -142,40 +147,25 @@ function entryCandidatesForPackage(packageDir: string): string[] {
     const exportMap = exportsField as Record<string, unknown>;
     const rootExport = exportMap["."] ?? exportMap["./index"];
     if (typeof rootExport === "string") {
-      const resolvedExport = resolveFileCandidate(path.resolve(packageDir, rootExport));
-      if (resolvedExport) {
-        candidates.push(...preferredEntryCandidates(resolvedExport, packageDir));
-      }
+      candidates.push(...entryFiles(rootExport, packageDir));
     } else if (rootExport && typeof rootExport === "object") {
       const conditionalExportMap = rootExport as Record<string, unknown>;
       for (const key of ["require", "default"]) {
         const conditionalExport = conditionalExportMap[key];
-        if (typeof conditionalExport === "string") {
-          const resolvedExport = resolveFileCandidate(path.resolve(packageDir, conditionalExport));
-          if (resolvedExport) {
-            candidates.push(...preferredEntryCandidates(resolvedExport, packageDir));
-            break;
-          }
+        const files = typeof conditionalExport === "string" ? entryFiles(conditionalExport, packageDir) : [];
+        if (files.length > 0) {
+          candidates.push(...files);
+          break;
         }
       }
     }
   }
 
   const binField = packageJson.bin;
-  if (typeof binField === "string") {
-    const resolvedBin = resolveFileCandidate(path.resolve(packageDir, binField));
-    if (resolvedBin) {
-      candidates.push(...preferredEntryCandidates(resolvedBin, packageDir));
-    }
-  } else if (binField && typeof binField === "object") {
-    for (const value of Object.values(binField)) {
-      if (typeof value !== "string") {
-        continue;
-      }
-      const resolvedBin = resolveFileCandidate(path.resolve(packageDir, value));
-      if (resolvedBin) {
-        candidates.push(...preferredEntryCandidates(resolvedBin, packageDir));
-      }
+  const bins = typeof binField === "string" ? [binField] : binField && typeof binField === "object" ? Object.values(binField) : [];
+  for (const bin of bins) {
+    if (typeof bin === "string") {
+      candidates.push(...entryFiles(bin, packageDir));
     }
   }
 
@@ -190,7 +180,7 @@ function entryCandidatesForPackage(packageDir: string): string[] {
 }
 
 // An entry point the graph cannot start from leaves every verdict UNREACHABLE, so a given entry must exist (and
-// buildGraph fails on one it cannot parse), and a detected one that is not code is dropped.
+// buildGraph fails on one it cannot parse), and a detected one that is missing or not code is dropped with a warning.
 export function detectEntryPoints(cwd: string, explicitEntries?: string[]): string[] {
   if (explicitEntries && explicitEntries.length > 0) {
     return explicitEntries.map((entry) => {
@@ -241,7 +231,8 @@ export function collectSourceFiles(cwd: string, pattern = /\.[cm]?[jt]sx?$/): st
         continue;
       }
 
-      if (pattern.test(entry)) {
+      // Regular files only: reading a named pipe would block.
+      if (stats.isFile() && pattern.test(entry)) {
         sourceFiles.push(fullPath);
       }
     }
@@ -626,23 +617,36 @@ function verdictFor(cwd: string, graph: CallGraph, usedByDependencies: Set<strin
   };
 }
 
-// Files whose text can name a function: every source file, and components and templates, which are not parsed.
-const PROJECT_FILES = /\.([cm]?[jt]sx?|vue|svelte|astro|ejs|pug|jade|hbs|handlebars|mustache|njk|liquid|eta|html?)$/;
+// Files whose text can name a function: source files; components, templates and views, which are not parsed;
+// CoffeeScript; and extensionless files (bin/www), kept when isScript says node may run them.
+const PROJECT_FILES =
+  /\.(?:[cm]?[jt]sx?|vue|svelte|astro|marko|mdx|ejs|pug|jade|hbs|handlebars|mustache|njk|nunjucks|liquid|eta|twig|dust|swig|haml|hamlc|hjs|hogan|jst|tpl|tmpl|vash|edge|art|eco|ect|j2|jinja2?|html?|coffee|litcoffee)$|^[^.]+$/;
+
+// An extensionless file node may run (bin/www, scripts/report): a shebang naming node (or bun, deno, tsx), or no shebang
+// and code that loads modules. Not README, LICENSE, Makefile or a binary.
+function isScript(text: string): boolean {
+  return !text.includes("\0") && (text.startsWith("#!") ? /^#!.*\b(?:node|bun|deno|tsx)\b/.test(text) : /\b(?:require|import)\b/.test(text));
+}
 
 // Which of `symbols` a project file mentions, as raw text, reachable from an entry point or not: every file
-// collectSourceFiles finds (test files left out, as in the graph), components and templates, and the graph's own files
-// (an extensionless bin, dist/ files an entry imports). Routes loaded with fs.readdirSync and require(file) never join
-// the graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide calls from it, and a file
-// the parser cannot read still counts. One pass for all symbols, stopping once each is found.
+// collectSourceFiles finds (test files left out, as in the graph), components, templates and extensionless scripts, and
+// the graph's own files (an extensionless bin, dist/ files an entry imports). Routes loaded with fs.readdirSync and
+// require(file) never join the graph, aliases (import { template as t }), callbacks (.map(_.trim)) and re-exports hide
+// calls from it, and a file the parser cannot read still counts. One pass for all symbols, stopping once each is found.
 function mentionedInProject(cwd: string, graph: CallGraph, symbols: string[]): Set<string> {
-  const files = new Set([
-    ...[...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
-    ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file)),
-  ]);
+  const graphFiles = new Set(
+    [...graph.nodes.values()].filter((node) => node.name === "module" && !node.id.startsWith("pkg:")).map((node) => path.resolve(cwd, node.file)),
+  );
+  const files = new Set([...graphFiles, ...collectSourceFiles(cwd, PROJECT_FILES).filter((file) => !isSkippedTestFile(file, cwd))]);
   const name = new RegExp(String.raw`(?<![\w$])(${symbols.map(escapeRegExp).join("|")})(?![\w$])`, "g");
   const found = new Set<string>();
   for (const file of files) {
-    for (const match of readFileSync(file, "utf8").matchAll(name)) {
+    const text = readFileSync(file, "utf8");
+    if (path.extname(file) === "" && !graphFiles.has(file) && !isScript(text)) {
+      continue;
+    }
+
+    for (const match of text.matchAll(name)) {
       found.add(match[1]);
     }
 
@@ -660,13 +664,18 @@ const MAX_DEPENDENCY_CODE_BYTES = 256 * 1024 * 1024;
 
 // Names among `names` that an installed package's code uses as a module specifier ('lodash', "lodash/fp"): a package
 // can require another without declaring it (consolidate@0.16 loads lodash to render templates), so the lockfile's
-// dependency lists miss it. Every node_modules folder counts, at any depth, except the packages the analysis leaves
-// out (dev-only) and a package's mentions of itself. Symlinks are not followed: npm links workspaces, the app's own
-// code, into node_modules. null when the search cannot be complete: the code is too large to read in full, or a
-// package links out of the project (file:../shared).
+// dependency lists miss it. Every node_modules folder counts, at any depth, npm's linked install store
+// (node_modules/.store) too, except the packages the analysis leaves out (dev-only) and a package's mentions of itself.
+// Symlinks are not followed: npm links workspaces, the app's own code, into node_modules, and a linked install links
+// each package to its folder in the store. null when the search cannot be complete: the code is too large to read in
+// full, or a package links out of the project (file:../shared).
 export function namedInDependencyCode(cwd: string, names: string[], maxBytes = MAX_DEPENDENCY_CODE_BYTES): Set<string> | null {
   const projectDirs = [cwd, ...workspaceDirectories(cwd)];
-  const excluded = new Set(projectDirs.filter(hasPackageLock).flatMap((directory) => [...excludedPackagePaths(directory)]));
+  const excluded = new Set(projectDirs.filter(hasPackageLock).flatMap((directory) => [...excludedPackages(directory)]));
+  const installedId = (directory: string): string => {
+    const manifest = packageJsonAt(directory);
+    return manifest ? `${String(manifest.name)}@${String(manifest.version)}` : "";
+  };
   const specifier = new RegExp(String.raw`(['"\x60])(${names.map(escapeRegExp).join("|")})(?:/[^'"\x60\s]*)?\1`, "g");
   const found = new Set<string>();
   const root = realpathSync(cwd);
@@ -704,10 +713,11 @@ export function namedInDependencyCode(cwd: string, names: string[], maxBytes = M
     return true;
   };
 
-  // node_modules/<name> and node_modules/@scope/<name>; dot folders (.bin, .cache) are not packages.
+  // node_modules/<name>, node_modules/@scope/<name>, and folders node can load code from although they are not packages
+  // (.store/<name>@<version>-<hash>/node_modules, .prisma); not .bin (links and shims) or .cache.
   const readNodeModules = (directory: string): boolean => {
     const packages = readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => !entry.name.startsWith("."))
+      .filter((entry) => entry.name !== ".bin" && entry.name !== ".cache")
       .flatMap((entry) =>
         entry.name.startsWith("@") && entry.isDirectory()
           ? readdirSync(path.join(directory, entry.name), { withFileTypes: true }).map((scoped) => ({
@@ -723,7 +733,7 @@ export function namedInDependencyCode(cwd: string, names: string[], maxBytes = M
 
     return packages
       .filter(({ dirent }) => dirent.isDirectory())
-      .every(({ packageDir, owner }) => excluded.has(packageDir) || readPackage(packageDir, owner));
+      .every(({ packageDir, owner }) => excluded.has(packageDir) || excluded.has(installedId(packageDir)) || readPackage(packageDir, owner));
   };
 
   try {
@@ -793,10 +803,12 @@ export async function analyze(options: AnalyzeOptions): Promise<AnalyzeResult> {
     }
   }
 
-  // Last, each search once for all of them: a mention of the function anywhere in the project, then another
-  // package's code naming the package.
+  // Last, for what is still UNREACHABLE: a project file using the package in a way calls cannot show (the parser's
+  // opaque specifiers), then each search once for all of them, a mention of the function anywhere in the project and
+  // another package's code naming the package.
   const symbolOf = (result: ReachabilityResult): string => result.advisory.exportedSymbol ?? "";
-  const unreachable = results.filter((result) => result.status === "UNREACHABLE");
+  const opaque = (result: ReachabilityResult): boolean => graph.opaque?.has(result.advisory.package) ?? false;
+  const unreachable = results.filter((result) => result.status === "UNREACHABLE" && !opaque(result));
   const mentioned = unreachable.length > 0 ? mentionedInProject(cwd, graph, [...new Set(unreachable.map(symbolOf))]) : new Set<string>();
   const candidates = [...new Set(unreachable.filter((result) => !mentioned.has(symbolOf(result))).map((result) => result.advisory.package))];
   const named = candidates.length > 0 ? namedInDependencyCode(cwd, candidates) : new Set<string>();
@@ -805,7 +817,7 @@ export async function analyze(options: AnalyzeOptions): Promise<AnalyzeResult> {
       return result;
     }
 
-    if (mentioned.has(symbolOf(result))) {
+    if (opaque(result) || mentioned.has(symbolOf(result))) {
       return { ...result, status: "UNKNOWN", reason: "unresolved-reference" };
     }
 

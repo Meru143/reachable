@@ -105,9 +105,11 @@
               reachable makes the uncertainty visible. When a call to the function an advisory
               names is on an import path from your entry points, it says REACHABLE and shows the
               path. It says UNREACHABLE only when every entry point parsed, your code imports the
-              copy of the package it loads, no other installed package declares it or names it in
-              its code, the advisory names the function plainly and the package exports it without
-              using it itself, no file in your project mentions the name, and no call path exists.
+              copy of the package it loads and uses it only by name (it never hands the whole module
+              on, indexes it by a computed name or passes the package's name around), no other
+              installed package declares it or names it in its code, the advisory names the function
+              plainly and the package exports it without using it itself, no file in your project
+              mentions the name, and no call path exists.
               Anything short of that is UNKNOWN, with the reason, instead of a bluff.
             </p>
           </div>
@@ -123,7 +125,7 @@
             </article>
             <article class="card">
               <h3>UNREACHABLE</h3>
-              <p>Every condition held: no call path, no mention of the function anywhere in your project, and no other installed package that declares or loads the package. No path reaches the functions the advisory names; a flaw in an internal helper they share with other functions is not seen.</p>
+              <p>Every condition held: no call path, no mention of the function anywhere in your project, no use of the package your code hides from the call graph, and no other installed package that declares or loads the package. No path reaches the functions the advisory names; a flaw in an internal helper they share with other functions is not seen.</p>
             </article>
           </div>
         </section>
