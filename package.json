@@ -1,6 +1,6 @@
 {
   "name": "@merupatel/reachable",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Local-first vulnerability reachability CLI for JavaScript and TypeScript",
   "bin": {
     "reachable": "dist/cli/index.js"

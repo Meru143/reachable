@@ -1,3 +1,10 @@
+## [1.0.13](https://github.com/Meru143/reachable/compare/v1.0.12...v1.0.13) (2026-10-28)
+
+
+### Bug Fixes
+
+* **scan:** stop false UNREACHABLE verdicts and fail incomplete scans ([#11](https://github.com/Meru143/reachable/issues/11)) ([46c4e82](https://github.com/Meru143/reachable/commit/46c4e82a708b5ea8f3e17c89ca06d7d813676e96))
+
 ## [1.0.12](https://github.com/Meru143/reachable/compare/v1.0.11...v1.0.12) (2026-10-27)
 
 
